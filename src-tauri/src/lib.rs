@@ -1858,11 +1858,6 @@ async fn update_discord_rpc(
     if !rpc.enabled {
         return Ok(());
     }
-    let ts = rpc.start_timestamp;
-    let client = match rpc.client.as_mut() {
-        Some(c) => c,
-        None => return Ok(()),
-    };
 
     let details = format!("Using {} - {} msgs", model, message_count);
     let state_text = if activity_str == "thinking" {
@@ -1875,17 +1870,57 @@ async fn update_discord_rpc(
         activity_str
     };
 
-    let _ = client.set_activity(
-        activity::Activity::new()
-            .state(&state_text)
-            .details(&details)
-            .timestamps(activity::Timestamps::new().start(ts))
-            .assets(
-                activity::Assets::new()
-                    .large_image("https://raw.githubusercontent.com/drvcvt/clauke/master/src-tauri/icons/icon.png")
-                    .large_text("Clauke - Claude Code Wrapper"),
-            ),
-    );
+    // Read timestamp before mutable borrow of client
+    let ts = rpc.start_timestamp;
+
+    // Try to set activity; if the pipe is broken, reconnect
+    let needs_reconnect = match rpc.client.as_mut() {
+        Some(client) => client
+            .set_activity(
+                activity::Activity::new()
+                    .state(&state_text)
+                    .details(&details)
+                    .timestamps(activity::Timestamps::new().start(ts))
+                    .assets(
+                        activity::Assets::new()
+                            .large_image("https://raw.githubusercontent.com/drvcvt/clauke/master/src-tauri/icons/icon.png")
+                            .large_text("Clauke - Claude Code Wrapper"),
+                    ),
+            )
+            .is_err(),
+        None => true,
+    };
+
+    if needs_reconnect {
+        // Drop stale client
+        if let Some(ref mut client) = rpc.client {
+            let _ = client.close();
+        }
+        rpc.client = None;
+
+        // Reconnect with fresh timestamp
+        let mut new_client = DiscordIpcClient::new(DISCORD_APP_ID);
+        if new_client.connect().is_ok() {
+            rpc.start_timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let new_ts = rpc.start_timestamp;
+            let _ = new_client.set_activity(
+                activity::Activity::new()
+                    .state(&state_text)
+                    .details(&details)
+                    .timestamps(activity::Timestamps::new().start(new_ts))
+                    .assets(
+                        activity::Assets::new()
+                            .large_image("https://raw.githubusercontent.com/drvcvt/clauke/master/src-tauri/icons/icon.png")
+                            .large_text("Clauke - Claude Code Wrapper"),
+                    ),
+            );
+            rpc.client = Some(new_client);
+        }
+    }
+
     Ok(())
 }
 
