@@ -2,7 +2,7 @@
   import { getCurrentWindow, Effect, EffectState } from "@tauri-apps/api/window";
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import type { ClaudeModel, EffortLevel, PermissionMode, McpServer, HookRule } from "../types";
+  import type { ClaudeModel, EffortLevel, PermissionMode, McpServer, McpServerType, HookRule } from "../types";
   import { MODEL_LABELS, EFFORT_LABELS, PERMISSION_LABELS, HOOK_EVENTS, HOOK_EVENT_LABELS } from "../types";
   import type { HookEvent } from "../types";
 
@@ -60,7 +60,7 @@
 
   const helpContent: Record<string, string> = {
     cli: "clauke needs the Claude Code CLI to work.\n\nInstall it via npm:\n  npm install -g @anthropic-ai/claude-code\n\nThen run 'claude' once in a terminal to authenticate.\n\nIf the status shows a red X, Claude CLI is not in your PATH. Either:\n  1. Restart clauke after installing\n  2. Set the full path below (e.g. C:\\Users\\you\\AppData\\Roaming\\npm\\claude.cmd)\n\nClick 'verify' to re-check after changes.",
-    mcp: "MCP (Model Context Protocol) servers extend Claude with custom tools.\n\nAdd a server by providing:\n  name — unique identifier\n  command — e.g. npx, node, python\n  args — command arguments\n\nExample: name=filesystem, command=npx, args=-y @anthropic/mcp-filesystem",
+    mcp: "MCP (Model Context Protocol) servers extend Claude with custom tools.\n\nServer types:\n  stdio — runs a local command (e.g. npx, node, python)\n  http — connects to an HTTP MCP endpoint\n  sse — connects to a Server-Sent Events endpoint\n\nExamples:\n  stdio: name=filesystem, command=npx, args=-y @anthropic/mcp-filesystem\n  http: name=ida-pro, url=http://127.0.0.1:13337/mcp",
     hooks: "Hooks run shell commands at specific points in Claude's lifecycle.\n\nEvents:\n  PreToolUse — before a tool runs\n  PostToolUse — after a tool runs\n  SessionStart/End — session lifecycle\n  Stop — when Claude finishes\n\nMatcher is a regex to filter tool names (e.g. Edit|Write).",
   };
 
@@ -219,6 +219,26 @@
     save("autoScroll", String(autoScroll));
   }
 
+  // ── Discord RPC ──
+  let discordRpcEnabled = $state(true);
+
+  async function loadDiscordRpcState() {
+    try {
+      discordRpcEnabled = await invoke<boolean>("get_discord_rpc_enabled");
+    } catch {
+      discordRpcEnabled = true;
+    }
+  }
+
+  async function toggleDiscordRpc() {
+    discordRpcEnabled = !discordRpcEnabled;
+    try {
+      await invoke("toggle_discord_rpc", { enabled: discordRpcEnabled });
+    } catch {
+      // Discord not running — toggle still persists preference
+    }
+  }
+
   const permModes: PermissionMode[] = ["bypass", "acceptEdits", "plan", "default"];
 
   function cyclePermissionMode() {
@@ -273,8 +293,15 @@
   let mcpLoading = $state(false);
   let mcpAddOpen = $state(false);
   let mcpNewName = $state("");
+  let mcpNewType = $state<McpServerType>("stdio");
   let mcpNewCommand = $state("");
   let mcpNewArgs = $state("");
+  let mcpNewUrl = $state("");
+
+  // Health check state
+  type HealthStatus = "unknown" | "checking" | "healthy" | "unhealthy";
+  let mcpHealth = $state<Record<string, HealthStatus>>({});
+  let mcpHealthErrors = $state<Record<string, string>>({});
 
   async function loadMcpServers() {
     mcpLoading = true;
@@ -288,14 +315,28 @@
 
   async function addMcpServer() {
     const name = mcpNewName.trim();
-    const command = mcpNewCommand.trim();
-    if (!name || !command) return;
-    const args = mcpNewArgs.trim() ? mcpNewArgs.trim().split(/\s+/) : [];
+    if (!name) return;
+
     try {
-      await invoke("add_mcp_server", { name, command, args, env: {} });
+      if (mcpNewType === "stdio") {
+        const command = mcpNewCommand.trim();
+        if (!command) return;
+        const args = mcpNewArgs.trim() ? mcpNewArgs.trim().split(/\s+/) : [];
+        await invoke("add_mcp_server", {
+          name, serverType: "stdio", command, args, env: {}, url: null,
+        });
+      } else {
+        const url = mcpNewUrl.trim();
+        if (!url) return;
+        await invoke("add_mcp_server", {
+          name, serverType: mcpNewType, command: null, args: null, env: null, url,
+        });
+      }
       mcpNewName = "";
+      mcpNewType = "stdio";
       mcpNewCommand = "";
       mcpNewArgs = "";
+      mcpNewUrl = "";
       mcpAddOpen = false;
       await loadMcpServers();
     } catch { /* silently fail */ }
@@ -304,8 +345,36 @@
   async function removeMcpServer(name: string) {
     try {
       await invoke("remove_mcp_server", { name });
+      delete mcpHealth[name];
+      delete mcpHealthErrors[name];
       await loadMcpServers();
     } catch { /* silently fail */ }
+  }
+
+  async function checkMcpHealth(server: McpServer) {
+    mcpHealth[server.name] = "checking";
+    try {
+      const result = await invoke<{ name: string; healthy: boolean; error: string | null }>(
+        "check_mcp_server",
+        {
+          name: server.name,
+          serverType: server.type,
+          command: server.command ?? null,
+          url: server.url ?? null,
+        },
+      );
+      mcpHealth[result.name] = result.healthy ? "healthy" : "unhealthy";
+      if (result.error) mcpHealthErrors[result.name] = result.error;
+      else delete mcpHealthErrors[result.name];
+    } catch {
+      mcpHealth[server.name] = "unhealthy";
+    }
+  }
+
+  function checkAllMcpHealth() {
+    for (const server of mcpServers) {
+      checkMcpHealth(server);
+    }
   }
 
   // ── Hooks ──
@@ -362,10 +431,11 @@
   // Load MCP servers, hooks, editors, and CLI status when panel opens
   $effect(() => {
     if (isOpen) {
-      loadMcpServers();
+      loadMcpServers().then(() => checkAllMcpHealth());
       loadHooks();
       loadEditors();
       checkCli();
+      loadDiscordRpcState();
     }
   });
 </script>
@@ -540,6 +610,26 @@
           </div>
         </div>
 
+        <!-- ── Discord RPC ── -->
+        <div class="section">
+          <div class="section-title">integrations</div>
+
+          <div class="row">
+            <div class="label-group">
+              <span class="label">discord rich presence</span>
+              <span class="desc">show session stats in your Discord profile</span>
+            </div>
+            <button
+              class="toggle"
+              class:active={discordRpcEnabled}
+              title="Toggle Discord Rich Presence"
+              onclick={toggleDiscordRpc}
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+        </div>
+
         <!-- ── Editor ── -->
         <div class="section">
           <div class="section-title">editor</div>
@@ -586,6 +676,15 @@
             mcp servers
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <span class="help-trigger" onmouseenter={(e) => showHelp(e.currentTarget, 'mcp')} onmouseleave={hideHelp}>?</span>
+            {#if mcpServers.length > 0}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <span class="mcp-refresh" onclick={checkAllMcpHealth} title="Refresh status">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                  <path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                </svg>
+              </span>
+            {/if}
           </div>
 
           {#if mcpLoading}
@@ -595,9 +694,22 @@
           {:else}
             {#each mcpServers as server}
               <div class="mcp-row">
+                <span
+                  class="mcp-status-dot"
+                  class:healthy={mcpHealth[server.name] === "healthy"}
+                  class:unhealthy={mcpHealth[server.name] === "unhealthy"}
+                  class:checking={mcpHealth[server.name] === "checking"}
+                  title={mcpHealthErrors[server.name] || (mcpHealth[server.name] === "healthy" ? "connected" : mcpHealth[server.name] === "checking" ? "checking…" : "unknown")}
+                ></span>
                 <div class="mcp-info">
                   <span class="mcp-name">{server.name}</span>
-                  <span class="mcp-cmd">{server.command} {server.args.join(" ")}</span>
+                  <span class="mcp-cmd">
+                    {#if server.type === "http" || server.type === "sse"}
+                      {server.type}: {server.url}
+                    {:else}
+                      {server.command} {server.args?.join(" ") ?? ""}
+                    {/if}
+                  </span>
                 </div>
                 <button
                   class="mcp-remove"
@@ -616,8 +728,17 @@
           {#if mcpAddOpen}
             <div class="mcp-add-form">
               <input class="mcp-input" placeholder="name" bind:value={mcpNewName} />
-              <input class="mcp-input" placeholder="command (e.g. npx)" bind:value={mcpNewCommand} />
-              <input class="mcp-input" placeholder="args (space separated)" bind:value={mcpNewArgs} />
+              <select class="mcp-input" bind:value={mcpNewType}>
+                <option value="stdio">stdio (command)</option>
+                <option value="http">http (url)</option>
+                <option value="sse">sse (url)</option>
+              </select>
+              {#if mcpNewType === "stdio"}
+                <input class="mcp-input" placeholder="command (e.g. npx)" bind:value={mcpNewCommand} />
+                <input class="mcp-input" placeholder="args (space separated)" bind:value={mcpNewArgs} />
+              {:else}
+                <input class="mcp-input" placeholder="url (e.g. http://127.0.0.1:8080/mcp)" bind:value={mcpNewUrl} />
+              {/if}
               <div class="mcp-add-actions">
                 <button class="pill" onclick={addMcpServer}>add</button>
                 <button class="pill" onclick={() => (mcpAddOpen = false)}>cancel</button>
@@ -1138,6 +1259,61 @@
     gap: 4px;
     justify-content: flex-end;
     padding-top: 2px;
+  }
+
+  .mcp-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--text-tertiary);
+    opacity: 0.3;
+    transition: all 0.3s ease;
+  }
+
+  .mcp-status-dot.healthy {
+    background: rgba(100, 220, 140, 0.9);
+    opacity: 1;
+    box-shadow: 0 0 4px rgba(100, 220, 140, 0.3);
+  }
+
+  .mcp-status-dot.unhealthy {
+    background: rgba(255, 100, 100, 0.9);
+    opacity: 1;
+    box-shadow: 0 0 4px rgba(255, 100, 100, 0.3);
+  }
+
+  .mcp-status-dot.checking {
+    animation: mcp-pulse 1s ease-in-out infinite;
+    opacity: 0.6;
+  }
+
+  @keyframes mcp-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.8; }
+  }
+
+  .mcp-refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: none;
+    background: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border-radius: 4px;
+    margin-left: 4px;
+    opacity: 0.5;
+    transition: all 0.2s ease;
+    vertical-align: middle;
+  }
+
+  .mcp-refresh:hover {
+    opacity: 1;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.05);
   }
 
   .hook-row {

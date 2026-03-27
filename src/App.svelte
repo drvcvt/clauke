@@ -330,6 +330,44 @@
     return () => clearTimeout(saveTimer);
   });
 
+  // ── Discord RPC: update presence on state transitions ──
+  let lastRpcActivity = "";
+  $effect(() => {
+    const tab = activeTab;
+    if (!tab) return;
+
+    // Determine current activity
+    let activity = "idle";
+    if (tab.isRunning) {
+      activity = "thinking";
+      // Check for active tool calls
+      const msgs = tab.messages;
+      if (msgs.length > 0) {
+        const last = msgs[msgs.length - 1];
+        if (last.role === "assistant") {
+          for (let i = last.content.length - 1; i >= 0; i--) {
+            const block = last.content[i];
+            if (block.type === "tool_call" && !block.toolCall.isComplete) {
+              activity = `tool:${block.toolCall.name}`;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Only update when activity or model changes
+    const rpcKey = `${tab.model}:${activity}:${tab.messages.length}`;
+    if (rpcKey === lastRpcActivity) return;
+    lastRpcActivity = rpcKey;
+
+    invoke("update_discord_rpc", {
+      model: tab.model.charAt(0).toUpperCase() + tab.model.slice(1),
+      activityStr: activity,
+      messageCount: tab.messages.length,
+    }).catch(() => {});
+  });
+
   onMount(() => {
     // Disable browser context menu in production builds
     if (!import.meta.env.DEV) {

@@ -1,6 +1,7 @@
 mod claude;
 
 use claude::{ClaudeProcess, ClaudeRunner};
+use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,6 +12,14 @@ use tokio::sync::Mutex;
 /// Shared state: one Claude process per tab.
 struct AppState {
     tabs: Arc<Mutex<HashMap<String, ClaudeProcess>>>,
+    discord: Arc<Mutex<DiscordRpcState>>,
+}
+
+/// Discord Rich Presence state.
+struct DiscordRpcState {
+    client: Option<DiscordIpcClient>,
+    enabled: bool,
+    start_timestamp: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -207,7 +216,9 @@ async fn list_slash_commands(cwd: Option<String>) -> Result<Vec<DiscoveredComman
     Ok(commands)
 }
 
-/// Read .md files from a directory and extract command name + description from first heading.
+/// Read .md files from a directory and extract command name + description.
+/// Parses YAML frontmatter (description field) and falls back to first `# heading`.
+/// Skips commands whose description starts with "Deprecated".
 fn collect_commands_from_dir(dir: &PathBuf, source: &str, out: &mut Vec<DiscoveredCommand>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -224,16 +235,26 @@ fn collect_commands_from_dir(dir: &PathBuf, source: &str, out: &mut Vec<Discover
             .unwrap_or("unknown");
         let name = format!("/{}", stem);
 
-        // Read first few lines to extract the heading as description
-        let description = if let Ok(content) = std::fs::read_to_string(&path) {
-            content
-                .lines()
-                .find(|l| l.starts_with("# "))
-                .map(|l| l.trim_start_matches("# ").to_string())
-                .unwrap_or_else(|| stem.to_string())
-        } else {
-            stem.to_string()
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
         };
+
+        // Try to extract description from YAML frontmatter (--- delimited)
+        let description = extract_frontmatter_description(&content)
+            .or_else(|| {
+                content
+                    .lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l.trim_start_matches("# ").to_string())
+            })
+            .unwrap_or_else(|| stem.to_string());
+
+        // Skip deprecated commands
+        let desc_lower = description.to_lowercase();
+        if desc_lower.starts_with("deprecated") {
+            continue;
+        }
 
         out.push(DiscoveredCommand {
             name,
@@ -242,6 +263,30 @@ fn collect_commands_from_dir(dir: &PathBuf, source: &str, out: &mut Vec<Discover
             source: source.to_string(),
         });
     }
+}
+
+/// Extract the `description` field from YAML frontmatter (between `---` markers).
+fn extract_frontmatter_description(content: &str) -> Option<String> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    // Find the closing ---
+    let after_open = &trimmed[3..].trim_start_matches(['\r', '\n']);
+    let end = after_open.find("\n---").or_else(|| after_open.find("\r\n---"))?;
+    let frontmatter = &after_open[..end];
+
+    // Simple key: value parsing for description
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("description:") {
+            let val = rest.trim().trim_matches('"').trim_matches('\'');
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Send a steering message to the running Claude process in a specific tab.
@@ -300,9 +345,23 @@ async fn cleanup_clipboard(max_age_days: u64) -> Result<u32, String> {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct McpServerEntry {
     name: String,
-    command: String,
-    args: Vec<String>,
-    env: HashMap<String, String>,
+    #[serde(rename = "type")]
+    server_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct McpHealthResult {
+    name: String,
+    healthy: bool,
+    error: Option<String>,
 }
 
 fn claude_settings_path() -> Result<std::path::PathBuf, String> {
@@ -337,21 +396,49 @@ async fn list_mcp_servers() -> Result<Vec<McpServerEntry>, String> {
 
     if let Some(mcp) = settings.get("mcpServers").and_then(|v| v.as_object()) {
         for (name, config) in mcp {
-            let command = config.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let args: Vec<String> = config.get("args")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let env: HashMap<String, String> = config.get("env")
-                .and_then(|v| v.as_object())
-                .map(|obj| obj.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
-                .unwrap_or_default();
+            let server_type = config
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("stdio")
+                .to_string();
+
+            let (command, args, env, url) = match server_type.as_str() {
+                "http" | "sse" => {
+                    let url = config.get("url").and_then(|v| v.as_str()).map(String::from);
+                    (None, None, None, url)
+                }
+                _ => {
+                    let command = config
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let args: Option<Vec<String>> = config
+                        .get("args")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        });
+                    let env: Option<HashMap<String, String>> = config
+                        .get("env")
+                        .and_then(|v| v.as_object())
+                        .map(|obj| {
+                            obj.iter()
+                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                .collect()
+                        });
+                    (command, args, env, None)
+                }
+            };
 
             servers.push(McpServerEntry {
                 name: name.clone(),
+                server_type,
                 command,
                 args,
                 env,
+                url,
             });
         }
     }
@@ -361,7 +448,14 @@ async fn list_mcp_servers() -> Result<Vec<McpServerEntry>, String> {
 
 /// Add or update an MCP server in ~/.claude/settings.json
 #[tauri::command]
-async fn add_mcp_server(name: String, command: String, args: Vec<String>, env: HashMap<String, String>) -> Result<(), String> {
+async fn add_mcp_server(
+    name: String,
+    server_type: String,
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    env: Option<HashMap<String, String>>,
+    url: Option<String>,
+) -> Result<(), String> {
     let mut settings = read_claude_settings()?;
 
     let mcp_servers = settings
@@ -370,11 +464,24 @@ async fn add_mcp_server(name: String, command: String, args: Vec<String>, env: H
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    let server_config = serde_json::json!({
-        "command": command,
-        "args": args,
-        "env": env,
-    });
+    let server_config = match server_type.as_str() {
+        "http" | "sse" => serde_json::json!({
+            "type": server_type,
+            "url": url.unwrap_or_default(),
+        }),
+        _ => {
+            // stdio — omit "type" field to match Claude Code convention
+            let mut config = serde_json::json!({
+                "command": command.unwrap_or_default(),
+                "args": args.unwrap_or_default(),
+            });
+            let env_map = env.unwrap_or_default();
+            if !env_map.is_empty() {
+                config["env"] = serde_json::to_value(env_map).unwrap_or_default();
+            }
+            config
+        }
+    };
 
     mcp_servers
         .as_object_mut()
@@ -394,6 +501,83 @@ async fn remove_mcp_server(name: String) -> Result<(), String> {
     }
 
     write_claude_settings(&settings)
+}
+
+/// Check if an MCP server is reachable / healthy
+#[tauri::command]
+async fn check_mcp_server(
+    name: String,
+    server_type: String,
+    command: Option<String>,
+    url: Option<String>,
+) -> McpHealthResult {
+    match server_type.as_str() {
+        "http" | "sse" => {
+            let Some(url_str) = url else {
+                return McpHealthResult {
+                    name,
+                    healthy: false,
+                    error: Some("no URL configured".into()),
+                };
+            };
+            match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .danger_accept_invalid_certs(true)
+                .build()
+            {
+                Ok(client) => match client.get(&url_str).send().await {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        // 2xx-4xx means the server is up (MCP may reject bare GET)
+                        if status < 500 {
+                            McpHealthResult {
+                                name,
+                                healthy: true,
+                                error: None,
+                            }
+                        } else {
+                            McpHealthResult {
+                                name,
+                                healthy: false,
+                                error: Some(format!("HTTP {}", status)),
+                            }
+                        }
+                    }
+                    Err(e) => McpHealthResult {
+                        name,
+                        healthy: false,
+                        error: Some(e.to_string()),
+                    },
+                },
+                Err(e) => McpHealthResult {
+                    name,
+                    healthy: false,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+        _ => {
+            // stdio: check if the command exists in PATH
+            let cmd = command.unwrap_or_default();
+            if cmd.is_empty() {
+                return McpHealthResult {
+                    name,
+                    healthy: false,
+                    error: Some("no command configured".into()),
+                };
+            }
+            let healthy = is_in_path(&cmd);
+            McpHealthResult {
+                name,
+                healthy,
+                error: if healthy {
+                    None
+                } else {
+                    Some(format!("'{}' not found in PATH", cmd))
+                },
+            }
+        }
+    }
 }
 
 // ── Hooks management ──
@@ -836,16 +1020,174 @@ async fn write_file_contents(path: String, content: String) -> Result<(), String
     std::fs::write(&path, &content).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+// ── Discord Rich Presence ──
+
+/// The Discord Application ID for clauke.
+/// Create your own at https://discord.com/developers/applications if needed.
+const DISCORD_APP_ID: &str = "1334718443118788670";
+
+/// Toggle Discord Rich Presence on or off. Persists the preference.
+#[tauri::command]
+async fn toggle_discord_rpc(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut rpc = state.discord.lock().await;
+    rpc.enabled = enabled;
+
+    if enabled {
+        if rpc.client.is_none() {
+            let mut client = DiscordIpcClient::new(DISCORD_APP_ID);
+            if client.connect().is_ok() {
+                rpc.start_timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let ts = rpc.start_timestamp;
+                let _ = client.set_activity(
+                    activity::Activity::new()
+                        .state("Idle")
+                        .details("Using Clauke")
+                        .timestamps(activity::Timestamps::new().start(ts))
+                        .assets(
+                            activity::Assets::new()
+                                .large_image("clauke_icon")
+                                .large_text("Clauke - Claude Code Wrapper"),
+                        ),
+                );
+                rpc.client = Some(client);
+            }
+        }
+    } else if let Some(ref mut client) = rpc.client {
+        let _ = client.clear_activity();
+        let _ = client.close();
+        rpc.client = None;
+    }
+
+    // Persist preference
+    drop(rpc);
+    let dir = data_dir()?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = dir.join("discord_rpc.json");
+    let value = serde_json::json!({ "enabled": enabled }).to_string();
+    tokio::fs::write(&path, value.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Update the Discord Rich Presence activity. Called by the frontend on state transitions.
+#[tauri::command]
+async fn update_discord_rpc(
+    state: State<'_, AppState>,
+    model: String,
+    activity_str: String,
+    message_count: u32,
+) -> Result<(), String> {
+    let mut rpc = state.discord.lock().await;
+    if !rpc.enabled {
+        return Ok(());
+    }
+    let ts = rpc.start_timestamp;
+    let client = match rpc.client.as_mut() {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    let details = format!("Using {} - {} msgs", model, message_count);
+    let state_text = if activity_str == "thinking" {
+        "Thinking...".to_string()
+    } else if activity_str == "idle" {
+        "Idle".to_string()
+    } else if let Some(tool) = activity_str.strip_prefix("tool:") {
+        format!("Running {}", tool)
+    } else {
+        activity_str
+    };
+
+    let _ = client.set_activity(
+        activity::Activity::new()
+            .state(&state_text)
+            .details(&details)
+            .timestamps(activity::Timestamps::new().start(ts))
+            .assets(
+                activity::Assets::new()
+                    .large_image("clauke_icon")
+                    .large_text("Clauke - Claude Code Wrapper"),
+            ),
+    );
+    Ok(())
+}
+
+/// Check if Discord RPC is enabled (reads persisted preference).
+#[tauri::command]
+async fn get_discord_rpc_enabled() -> Result<bool, String> {
+    let path = data_dir()?.join("discord_rpc.json");
+    if !path.exists() {
+        return Ok(true); // Default: enabled
+    }
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let val: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({"enabled": true}));
+    Ok(val.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true))
+}
+
 pub fn run() {
     // Default cleanup: 7 days. The frontend can call cleanup_clipboard with the user's setting.
     cleanup_old_images(7);
+
+    // Read Discord RPC preference synchronously for startup
+    let discord_enabled = {
+        let path = data_dir().ok().map(|d| d.join("discord_rpc.json"));
+        path.and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+            .unwrap_or(true)
+    };
+
+    // Connect to Discord if enabled
+    let discord_state = if discord_enabled {
+        let mut client_opt = None;
+        let mut ts = 0i64;
+        let mut client = DiscordIpcClient::new(DISCORD_APP_ID);
+        if client.connect().is_ok() {
+            ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let _ = client.set_activity(
+                activity::Activity::new()
+                    .state("Idle")
+                    .details("Using clauke")
+                    .timestamps(activity::Timestamps::new().start(ts))
+                    .assets(
+                        activity::Assets::new()
+                            .large_image("clauke_icon")
+                            .large_text("Clauke - Claude Code Wrapper"),
+                    ),
+            );
+            client_opt = Some(client);
+        }
+        DiscordRpcState {
+            client: client_opt,
+            enabled: true,
+            start_timestamp: ts,
+        }
+    } else {
+        DiscordRpcState {
+            client: None,
+            enabled: false,
+            start_timestamp: 0,
+        }
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             tabs: Arc::new(Mutex::new(HashMap::new())),
+            discord: Arc::new(Mutex::new(discord_state)),
         })
-        .invoke_handler(tauri::generate_handler![send_prompt, stop_claude, steer_claude, save_clipboard_image, list_slash_commands, cleanup_clipboard, generate_title, list_agents, list_mcp_servers, add_mcp_server, remove_mcp_server, list_hooks, add_hook, remove_hook, storage_read, storage_write, storage_delete, get_cli_mode, list_directory, detect_editors, open_in_editor, check_claude_cli, read_file_contents, write_file_contents])
+        .invoke_handler(tauri::generate_handler![send_prompt, stop_claude, steer_claude, save_clipboard_image, list_slash_commands, cleanup_clipboard, generate_title, list_agents, list_mcp_servers, add_mcp_server, remove_mcp_server, check_mcp_server, list_hooks, add_hook, remove_hook, storage_read, storage_write, storage_delete, get_cli_mode, list_directory, detect_editors, open_in_editor, check_claude_cli, read_file_contents, write_file_contents, toggle_discord_rpc, update_discord_rpc, get_discord_rpc_enabled])
         .run(tauri::generate_context!())
         .expect("error while running clauke");
 }

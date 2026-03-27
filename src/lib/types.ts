@@ -237,12 +237,19 @@ export interface HookRule {
 /** Full hook configuration (event → rules) */
 export type HookConfig = Record<string, HookRule[]>;
 
+/** MCP server transport type */
+export type McpServerType = "stdio" | "http" | "sse";
+
 /** MCP server configuration */
 export interface McpServer {
   name: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
+  type: McpServerType;
+  /** stdio fields */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** http/sse fields */
+  url?: string;
 }
 
 /** Archived session record for the session manager */
@@ -284,22 +291,55 @@ export interface SlashCommand {
 
 /** Built-in commands that are always available (handled locally or by the CLI) */
 export const BUILTIN_COMMANDS: SlashCommand[] = [
-  { name: "/clear", description: "Clear conversation", kind: "local" },
+  { name: "/add-dir", description: "Add working directory to session", kind: "cli" },
+  { name: "/agents", description: "Manage agent configurations", kind: "cli" },
+  { name: "/branch", description: "Branch the current conversation", kind: "cli" },
+  { name: "/bug", description: "Submit feedback", kind: "cli" },
+  { name: "/chrome", description: "Configure Chrome integration", kind: "cli" },
+  { name: "/clear", description: "Clear conversation history", kind: "local" },
+  { name: "/color", description: "Set prompt bar color", kind: "cli" },
   { name: "/compact", description: "Compact conversation history", kind: "cli" },
-  { name: "/config", description: "View/modify configuration", kind: "cli" },
+  { name: "/config", description: "Open settings", kind: "cli" },
+  { name: "/context", description: "Visualize context usage", kind: "cli" },
+  { name: "/copy", description: "Copy last response to clipboard", kind: "cli" },
   { name: "/cost", description: "Show token usage & cost", kind: "cli" },
+  { name: "/desktop", description: "Continue session in Desktop app", kind: "cli" },
+  { name: "/diff", description: "Open diff viewer for uncommitted changes", kind: "cli" },
   { name: "/doctor", description: "Run diagnostics", kind: "cli" },
-  { name: "/help", description: "Get help with Claude Code", kind: "cli" },
+  { name: "/effort", description: "Set model effort level", kind: "cli" },
+  { name: "/exit", description: "Exit the CLI", kind: "cli" },
+  { name: "/export", description: "Export conversation as text", kind: "cli" },
+  { name: "/fast", description: "Toggle fast mode", kind: "cli" },
+  { name: "/help", description: "Show help & available commands", kind: "cli" },
+  { name: "/hooks", description: "View hook configurations", kind: "cli" },
+  { name: "/ide", description: "Manage IDE integrations", kind: "cli" },
   { name: "/init", description: "Initialize project with CLAUDE.md", kind: "cli" },
-  { name: "/login", description: "Switch accounts or login", kind: "cli" },
-  { name: "/memory", description: "View & edit Claude's memory", kind: "cli" },
+  { name: "/keybindings", description: "Open keybindings config", kind: "cli" },
+  { name: "/login", description: "Sign in to Anthropic account", kind: "cli" },
+  { name: "/logout", description: "Sign out from Anthropic account", kind: "cli" },
   { name: "/mcp", description: "Manage MCP servers", kind: "cli" },
+  { name: "/memory", description: "Edit CLAUDE.md & manage memory", kind: "cli" },
+  { name: "/model", description: "Select or change AI model", kind: "cli" },
   { name: "/permissions", description: "View & manage permissions", kind: "cli" },
-  { name: "/review", description: "Review code changes", kind: "cli" },
-  { name: "/status", description: "Show session status", kind: "cli" },
-  { name: "/terminal-setup", description: "Install shell integration", kind: "cli" },
-  { name: "/vim", description: "Toggle vim keybindings", kind: "cli" },
-  { name: "/bug", description: "Report a bug", kind: "cli" },
+  { name: "/plan", description: "Enter plan mode", kind: "cli" },
+  { name: "/plugin", description: "Manage Claude Code plugins", kind: "cli" },
+  { name: "/pr-comments", description: "Fetch GitHub PR comments", kind: "cli" },
+  { name: "/release-notes", description: "View full changelog", kind: "cli" },
+  { name: "/rename", description: "Rename the current session", kind: "cli" },
+  { name: "/resume", description: "Resume a conversation", kind: "cli" },
+  { name: "/rewind", description: "Rewind conversation to a checkpoint", kind: "cli" },
+  { name: "/schedule", description: "Manage scheduled tasks", kind: "cli" },
+  { name: "/skills", description: "List available skills", kind: "cli" },
+  { name: "/stats", description: "Visualize usage & session history", kind: "cli" },
+  { name: "/status", description: "Show version, model & connectivity", kind: "cli" },
+  { name: "/statusline", description: "Configure the status line", kind: "cli" },
+  { name: "/tasks", description: "List & manage background tasks", kind: "cli" },
+  { name: "/terminal-setup", description: "Configure terminal keybindings", kind: "cli" },
+  { name: "/theme", description: "Change color theme", kind: "cli" },
+  { name: "/upgrade", description: "Upgrade to higher plan tier", kind: "cli" },
+  { name: "/usage", description: "Show plan usage & rate limits", kind: "cli" },
+  { name: "/vim", description: "Toggle vim editing mode", kind: "cli" },
+  { name: "/voice", description: "Toggle push-to-talk voice dictation", kind: "cli" },
 ];
 
 /** File stats tracked per session for the file tree */

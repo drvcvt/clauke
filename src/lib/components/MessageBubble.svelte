@@ -5,7 +5,24 @@
   import { getToolIcon } from "../types";
   import { marked } from "marked";
   import hljs from "highlight.js/lib/common";
+  import lua from "highlight.js/lib/languages/lua";
+  import ini from "highlight.js/lib/languages/ini";
+  import dockerfile from "highlight.js/lib/languages/dockerfile";
+  import powershell from "highlight.js/lib/languages/powershell";
+  import haskell from "highlight.js/lib/languages/haskell";
+  import elixir from "highlight.js/lib/languages/elixir";
+  import dart from "highlight.js/lib/languages/dart";
+  import nix from "highlight.js/lib/languages/nix";
   import ToolCallCard from "./ToolCallCard.svelte";
+
+  hljs.registerLanguage("lua", lua);
+  hljs.registerLanguage("toml", ini);
+  hljs.registerLanguage("dockerfile", dockerfile);
+  hljs.registerLanguage("powershell", powershell);
+  hljs.registerLanguage("haskell", haskell);
+  hljs.registerLanguage("elixir", elixir);
+  hljs.registerLanguage("dart", dart);
+  hljs.registerLanguage("nix", nix);
 
   let {
     message,
