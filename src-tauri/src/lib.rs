@@ -310,6 +310,29 @@ async fn stop_claude(state: State<'_, AppState>, tab_id: String) -> Result<(), S
     Ok(())
 }
 
+/// Kill all running Claude processes and close Discord RPC — called before app close.
+#[tauri::command]
+async fn cleanup_all(state: State<'_, AppState>) -> Result<(), String> {
+    // Kill every running Claude process
+    let procs: Vec<ClaudeProcess> = {
+        let mut guard = state.tabs.lock().await;
+        guard.drain().map(|(_, p)| p).collect()
+    };
+    for proc in procs {
+        proc.kill().await;
+    }
+    // Close Discord RPC connection if active
+    {
+        let mut discord = state.discord.lock().await;
+        if let Some(ref mut client) = discord.client {
+            let _ = client.close();
+        }
+        discord.client = None;
+        discord.enabled = false;
+    }
+    Ok(())
+}
+
 /// Clean up old clipboard images from temp directory.
 /// Returns the number of files deleted.
 fn cleanup_old_images(max_age_days: u64) -> u32 {
@@ -578,6 +601,752 @@ async fn check_mcp_server(
             }
         }
     }
+}
+
+// ── MCP Auto-Discovery ──
+//
+// Detects MCP servers in scanned directories by examining:
+//   1. Node.js: package.json with MCP in name/description/keywords/dependencies
+//   2. Python (pyproject.toml): dependencies referencing mcp/fastmcp
+//   3. Python (bare): server.py/main.py with MCP imports (fastmcp, mcp sdk, etc.)
+//   4. Python (requirements.txt): requirements listing mcp/fastmcp packages
+//   5. Rust: Cargo.toml with MCP-related crate dependencies
+//
+// For each detected server, the correct deployment method is resolved:
+//   - Python: .venv/Scripts/python → uv run → python (in that priority)
+//   - Node: npx (if installed) → node <bin> → node <main>
+//   - Rust: pre-built binary in target/release → cargo run
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct DiscoveredMcp {
+    /// Display name (derived from package name or directory)
+    name: String,
+    /// How to run it
+    command: String,
+    /// Arguments to pass
+    args: Vec<String>,
+    /// Where it was found
+    source_path: String,
+    /// Package description if available
+    description: String,
+}
+
+/// Scan given directories for MCP server packages.
+#[tauri::command]
+async fn scan_mcp_directories(dirs: Vec<String>) -> Result<Vec<DiscoveredMcp>, String> {
+    let mut discovered: Vec<DiscoveredMcp> = Vec::new();
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for dir in &dirs {
+        let dir_path = std::path::Path::new(dir);
+        if !dir_path.exists() || !dir_path.is_dir() {
+            continue;
+        }
+        scan_directory_for_mcps(dir_path, &mut discovered, &mut seen_names, 0, 3);
+    }
+
+    Ok(discovered)
+}
+
+/// Skip directories that are build artifacts / dependency caches / hidden
+const SKIP_DIRS: &[&str] = &[
+    "node_modules", "__pycache__", "target", "dist", "build",
+    ".venv", "venv", ".tox", ".nox", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", "egg-info",
+];
+
+fn scan_directory_for_mcps(
+    dir: &std::path::Path,
+    discovered: &mut Vec<DiscoveredMcp>,
+    seen_names: &mut std::collections::HashSet<String>,
+    depth: usize,
+    max_depth: usize,
+) {
+    if depth > max_depth {
+        return;
+    }
+
+    let mut found = false;
+
+    // ── 1. Node.js: package.json ──
+    let pkg_json_path = dir.join("package.json");
+    if pkg_json_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pkg_json_path) {
+            if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+                if is_mcp_node_package(&pkg) {
+                    if let Some(mcp) = extract_mcp_from_node(&pkg, dir) {
+                        if seen_names.insert(mcp.name.clone()) {
+                            discovered.push(mcp);
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 2. Python: pyproject.toml ──
+    if !found {
+        let pyproject_path = dir.join("pyproject.toml");
+        if pyproject_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&pyproject_path) {
+                if text_has_mcp_signal(&content) {
+                    if let Some(mcp) = extract_mcp_from_python_project(dir, &content) {
+                        if seen_names.insert(mcp.name.clone()) {
+                            discovered.push(mcp);
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 3. Python: bare server.py / main.py with MCP imports ──
+    if !found {
+        if let Some(mcp) = detect_bare_python_mcp(dir) {
+            if seen_names.insert(mcp.name.clone()) {
+                discovered.push(mcp);
+                found = true;
+            }
+        }
+    }
+
+    // ── 4. Python: requirements.txt referencing mcp/fastmcp ──
+    if !found {
+        let req_path = dir.join("requirements.txt");
+        if req_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&req_path) {
+                if requirements_has_mcp(&content) {
+                    // requirements.txt confirms MCP deps, look for entry point
+                    if let Some(mcp) = build_python_mcp_entry(dir, "") {
+                        if seen_names.insert(mcp.name.clone()) {
+                            discovered.push(mcp);
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 5. Rust: Cargo.toml with MCP crate deps ──
+    if !found {
+        let cargo_path = dir.join("Cargo.toml");
+        if cargo_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_path) {
+                if text_has_mcp_signal(&content) {
+                    if let Some(mcp) = extract_mcp_from_cargo(dir, &content) {
+                        if seen_names.insert(mcp.name.clone()) {
+                            discovered.push(mcp);
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Recurse into subdirectories ──
+    let _ = found; // suppress unused warning
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.')
+                    || SKIP_DIRS.iter().any(|s| name == *s || name.ends_with(s))
+                {
+                    continue;
+                }
+                scan_directory_for_mcps(&path, discovered, seen_names, depth + 1, max_depth);
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Signal detection helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Check if arbitrary text contains MCP-related signals (case-insensitive).
+fn text_has_mcp_signal(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("mcp")
+        || lower.contains("model-context-protocol")
+        || lower.contains("model_context_protocol")
+        || lower.contains("model context protocol")
+        || lower.contains("fastmcp")
+}
+
+/// Check if a Python source file's header contains MCP imports.
+fn python_source_has_mcp_imports(content: &str) -> bool {
+    // Only scan the first ~6KB (imports are at the top)
+    let header: String = content.chars().take(6144).collect();
+    let lower = header.to_lowercase();
+    lower.contains("from fastmcp")
+        || lower.contains("import fastmcp")
+        || lower.contains("from mcp.server")
+        || lower.contains("from mcp import")
+        || lower.contains("import mcp")
+        || lower.contains("mcpserver")
+        || lower.contains("model_context_protocol")
+}
+
+/// Check if requirements.txt lists mcp/fastmcp as a dependency.
+fn requirements_has_mcp(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim().to_lowercase();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // Match package names like "mcp", "mcp>=1.0", "fastmcp", "fastmcp[dev]", etc.
+        // Split on version specifiers and extras
+        let pkg_name: String = trimmed.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if pkg_name == "mcp" || pkg_name == "fastmcp"
+            || pkg_name == "mcp-server" || pkg_name == "mcp_server"
+        {
+            return true;
+        }
+    }
+    false
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Display name helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Clean up a raw name into a nice display name by stripping mcp prefixes/suffixes.
+fn clean_mcp_display_name(raw: &str) -> String {
+    let name = raw
+        .trim_start_matches('@')
+        .split('/')
+        .last()
+        .unwrap_or(raw)
+        .replace("mcp-server-", "")
+        .replace("mcp_server_", "")
+        .replace("mcp-", "")
+        .replace("mcp_", "")
+        .replace("-mcp", "")
+        .replace("_mcp", "")
+        .replace("server-", "")
+        .replace("server_", "");
+    if name.is_empty() { raw.to_string() } else { name }
+}
+
+/// Get a display name from a directory, falling back to the dir name itself.
+fn display_name_from_dir(dir: &std::path::Path) -> String {
+    let dir_name = dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let cleaned = clean_mcp_display_name(&dir_name);
+    if cleaned.is_empty() { dir_name } else { cleaned }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Description extraction
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Extract description from a Python file: tries module docstring, then FastMCP() instructions arg.
+fn extract_python_description(dir: &std::path::Path) -> String {
+    for candidate in &["server.py", "main.py", "__main__.py", "app.py"] {
+        let path = dir.join(candidate);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            // Try module docstring (triple-quoted at the top)
+            for delim in &["\"\"\"", "'''"] {
+                if let Some(start) = content.find(delim) {
+                    // Only consider docstrings near the top of the file (within first 500 chars)
+                    if start < 500 {
+                        let after = start + delim.len();
+                        if let Some(end) = content[after..].find(delim) {
+                            let doc = &content[after..after + end];
+                            let first_line = doc.lines()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("")
+                                .trim();
+                            if !first_line.is_empty() {
+                                return first_line.chars().take(150).collect();
+                            }
+                        }
+                    }
+                }
+            }
+            // Try FastMCP("name", instructions="...")  pattern
+            if let Some(idx) = content.find("instructions") {
+                let slice = &content[idx..std::cmp::min(idx + 500, content.len())];
+                // Look for the string value after instructions=
+                for str_delim in &["\"", "'"] {
+                    if let Some(pstart) = slice.find(&format!("instructions={}", str_delim)) {
+                        let after = pstart + format!("instructions={}", str_delim).len();
+                        if let Some(pend) = slice[after..].find(str_delim) {
+                            let desc = &slice[after..after + pend];
+                            let first_line = desc.lines()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("")
+                                .trim();
+                            if !first_line.is_empty() {
+                                return first_line.chars().take(150).collect();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Extract description from Cargo.toml's description field.
+fn extract_cargo_description(content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("description") {
+            if let Some(val) = trimmed.split('=').nth(1) {
+                let desc = val.trim().trim_matches('"').trim_matches('\'');
+                if !desc.is_empty() {
+                    return desc.chars().take(150).collect();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Python deployment method resolution
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Resolve the best way to run a Python MCP server.
+/// Priority: local .venv → uv run (if uv.lock present) → system python
+fn resolve_python_command(dir: &std::path::Path) -> (String, Vec<String>) {
+    // 1. Local virtualenv: .venv/Scripts/python (Windows) or .venv/bin/python (Unix)
+    let venv_python_win = dir.join(".venv").join("Scripts").join("python.exe");
+    let venv_python_unix = dir.join(".venv").join("bin").join("python");
+    if venv_python_win.exists() {
+        return (venv_python_win.to_string_lossy().to_string(), vec![]);
+    }
+    if venv_python_unix.exists() {
+        return (venv_python_unix.to_string_lossy().to_string(), vec![]);
+    }
+
+    // Also check venv/ (without dot)
+    let venv2_win = dir.join("venv").join("Scripts").join("python.exe");
+    let venv2_unix = dir.join("venv").join("bin").join("python");
+    if venv2_win.exists() {
+        return (venv2_win.to_string_lossy().to_string(), vec![]);
+    }
+    if venv2_unix.exists() {
+        return (venv2_unix.to_string_lossy().to_string(), vec![]);
+    }
+
+    // 2. uv managed project (uv.lock or pyproject.toml + uv available)
+    let has_uv_lock = dir.join("uv.lock").exists();
+    let has_pyproject = dir.join("pyproject.toml").exists();
+    if has_uv_lock || has_pyproject {
+        // Check if uv is available on PATH
+        if which_exists("uv") {
+            return ("uv".to_string(), vec!["run".to_string(), "--directory".to_string(),
+                dir.to_string_lossy().to_string()]);
+        }
+    }
+
+    // 3. System python
+    ("python".to_string(), vec![])
+}
+
+/// Find the Python entry point script in a directory.
+fn find_python_entry_point(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    for candidate in &["server.py", "main.py", "__main__.py", "app.py"] {
+        let path = dir.join(candidate);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Build a complete DiscoveredMcp for a Python project, resolving deployment method.
+fn build_python_mcp_entry(dir: &std::path::Path, pyproject_content: &str) -> Option<DiscoveredMcp> {
+    let display_name = display_name_from_dir(dir);
+    let description = extract_python_description(dir);
+
+    // Check if pyproject.toml defines a console script entry point
+    if !pyproject_content.is_empty() {
+        // Look for [project.scripts] section
+        if let Some(scripts_idx) = pyproject_content.find("[project.scripts]") {
+            let after = &pyproject_content[scripts_idx + "[project.scripts]".len()..];
+            // First non-empty line after the section header is likely the script entry
+            for line in after.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if trimmed.starts_with('[') {
+                    break; // Next section
+                }
+                if let Some(eq_pos) = trimmed.find('=') {
+                    let script_name = trimmed[..eq_pos].trim().trim_matches('"');
+                    if !script_name.is_empty() {
+                        let (cmd, mut args) = resolve_python_command(dir);
+                        // If using uv, the script will be available after install
+                        if cmd == "uv" {
+                            args.push("python".to_string());
+                            args.push("-m".to_string());
+                            let module_name = dir.file_name()?
+                                .to_string_lossy()
+                                .replace('-', "_");
+                            args.push(module_name);
+                        } else {
+                            // Direct python -m <module>
+                            let module_name = dir.file_name()?
+                                .to_string_lossy()
+                                .replace('-', "_");
+                            args.push("-m".to_string());
+                            args.push(module_name);
+                        }
+                        return Some(DiscoveredMcp {
+                            name: display_name,
+                            command: cmd,
+                            args,
+                            source_path: dir.to_string_lossy().to_string(),
+                            description,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Check for src/ layout → python -m <package>
+        let has_src = dir.join("src").exists();
+        if has_src {
+            let module_name = dir.file_name()?.to_string_lossy().replace('-', "_");
+            let (cmd, mut args) = resolve_python_command(dir);
+            if cmd == "uv" {
+                args.push("python".to_string());
+            }
+            args.push("-m".to_string());
+            args.push(module_name);
+            return Some(DiscoveredMcp {
+                name: display_name,
+                command: cmd,
+                args,
+                source_path: dir.to_string_lossy().to_string(),
+                description,
+            });
+        }
+    }
+
+    // Fallback: look for entry point scripts
+    if let Some(entry) = find_python_entry_point(dir) {
+        let (cmd, mut args) = resolve_python_command(dir);
+        if cmd == "uv" {
+            args.push("python".to_string());
+        }
+        args.push(entry.to_string_lossy().to_string());
+        return Some(DiscoveredMcp {
+            name: display_name,
+            command: cmd,
+            args,
+            source_path: dir.to_string_lossy().to_string(),
+            description,
+        });
+    }
+
+    None
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Node.js detection and extraction
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Check if a package.json represents an MCP server.
+/// Checks: name, description, keywords, and dependency lists.
+fn is_mcp_node_package(pkg: &serde_json::Value) -> bool {
+    // Check name and description fields
+    let check_str_field = |field: &str| -> bool {
+        pkg.get(field)
+            .and_then(|v| v.as_str())
+            .map(|s| text_has_mcp_signal(s))
+            .unwrap_or(false)
+    };
+
+    if check_str_field("name") || check_str_field("description") {
+        return true;
+    }
+
+    // Check keywords array
+    if let Some(keywords) = pkg.get("keywords").and_then(|v| v.as_array()) {
+        for kw in keywords {
+            if let Some(s) = kw.as_str() {
+                if text_has_mcp_signal(s) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Check dependencies and devDependencies for MCP SDK packages
+    for dep_key in &["dependencies", "devDependencies"] {
+        if let Some(deps) = pkg.get(dep_key).and_then(|v| v.as_object()) {
+            for key in deps.keys() {
+                let lower = key.to_lowercase();
+                if lower.contains("mcp") || lower == "@modelcontextprotocol/sdk" {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Extract MCP server info from a Node.js package.json.
+fn extract_mcp_from_node(
+    pkg: &serde_json::Value,
+    dir: &std::path::Path,
+) -> Option<DiscoveredMcp> {
+    let raw_name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let description = pkg
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let display_name = clean_mcp_display_name(raw_name);
+    let display_name = if display_name.is_empty() {
+        display_name_from_dir(dir)
+    } else {
+        display_name
+    };
+
+    // Priority: bin entry → scripts.start → main field
+
+    // 1. bin entry
+    if let Some(bin) = pkg.get("bin") {
+        if let Some(bin_obj) = bin.as_object() {
+            if let Some((_, bin_path)) = bin_obj.iter().next() {
+                if let Some(path_str) = bin_path.as_str() {
+                    let full_path = dir.join(path_str);
+                    return Some(DiscoveredMcp {
+                        name: display_name,
+                        command: "node".to_string(),
+                        args: vec![full_path.to_string_lossy().to_string()],
+                        source_path: dir.to_string_lossy().to_string(),
+                        description,
+                    });
+                }
+            }
+        } else if let Some(bin_str) = bin.as_str() {
+            let full_path = dir.join(bin_str);
+            return Some(DiscoveredMcp {
+                name: display_name,
+                command: "node".to_string(),
+                args: vec![full_path.to_string_lossy().to_string()],
+                source_path: dir.to_string_lossy().to_string(),
+                description,
+            });
+        }
+    }
+
+    // 2. scripts.start
+    if let Some(start) = pkg
+        .get("scripts")
+        .and_then(|s| s.get("start"))
+        .and_then(|v| v.as_str())
+    {
+        let parts: Vec<&str> = start.split_whitespace().collect();
+        if !parts.is_empty() {
+            // If start script uses a relative path, resolve it
+            let cmd = parts[0];
+            let args: Vec<String> = parts[1..].iter().map(|s| {
+                if s.starts_with("./") || s.starts_with("src/") || s.starts_with("dist/") {
+                    dir.join(s).to_string_lossy().to_string()
+                } else {
+                    s.to_string()
+                }
+            }).collect();
+            return Some(DiscoveredMcp {
+                name: display_name,
+                command: cmd.to_string(),
+                args,
+                source_path: dir.to_string_lossy().to_string(),
+                description,
+            });
+        }
+    }
+
+    // 3. main field
+    if let Some(main) = pkg.get("main").and_then(|v| v.as_str()) {
+        let full_path = dir.join(main);
+        return Some(DiscoveredMcp {
+            name: display_name,
+            command: "node".to_string(),
+            args: vec![full_path.to_string_lossy().to_string()],
+            source_path: dir.to_string_lossy().to_string(),
+            description,
+        });
+    }
+
+    None
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Python pyproject.toml detection
+// ────────────────────────────────────────────────────────────────────────────
+
+fn extract_mcp_from_python_project(
+    dir: &std::path::Path,
+    pyproject_content: &str,
+) -> Option<DiscoveredMcp> {
+    build_python_mcp_entry(dir, pyproject_content)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Bare Python MCP detection (no pyproject.toml, no package.json)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Detect a Python MCP server from bare .py files with MCP imports.
+fn detect_bare_python_mcp(dir: &std::path::Path) -> Option<DiscoveredMcp> {
+    // Skip if we already have structured project files (handled by other detectors)
+    if dir.join("package.json").exists() || dir.join("pyproject.toml").exists() {
+        return None;
+    }
+
+    // Check entry point files for MCP imports
+    for candidate in &["server.py", "main.py", "__main__.py", "app.py"] {
+        let path = dir.join(candidate);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if python_source_has_mcp_imports(&content) {
+                    let display_name = display_name_from_dir(dir);
+                    let description = extract_python_description(dir);
+                    let (cmd, mut args) = resolve_python_command(dir);
+                    if cmd == "uv" {
+                        args.push("python".to_string());
+                    }
+                    args.push(path.to_string_lossy().to_string());
+                    return Some(DiscoveredMcp {
+                        name: display_name,
+                        command: cmd,
+                        args,
+                        source_path: dir.to_string_lossy().to_string(),
+                        description,
+                    });
+                }
+            }
+        }
+    }
+
+    // Also check requirements.txt as a secondary signal if no entry point found above
+    // but a requirements.txt exists with MCP deps — try to find any .py that imports MCP
+    let req_path = dir.join("requirements.txt");
+    if req_path.exists() {
+        if let Ok(req_content) = std::fs::read_to_string(&req_path) {
+            if requirements_has_mcp(&req_content) {
+                if let Some(entry) = find_python_entry_point(dir) {
+                    let display_name = display_name_from_dir(dir);
+                    let description = extract_python_description(dir);
+                    let (cmd, mut args) = resolve_python_command(dir);
+                    if cmd == "uv" {
+                        args.push("python".to_string());
+                    }
+                    args.push(entry.to_string_lossy().to_string());
+                    return Some(DiscoveredMcp {
+                        name: display_name,
+                        command: cmd,
+                        args,
+                        source_path: dir.to_string_lossy().to_string(),
+                        description,
+                    });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Rust/Cargo detection
+// ────────────────────────────────────────────────────────────────────────────
+
+fn extract_mcp_from_cargo(
+    dir: &std::path::Path,
+    cargo_content: &str,
+) -> Option<DiscoveredMcp> {
+    let display_name = display_name_from_dir(dir);
+    let description = extract_cargo_description(cargo_content);
+
+    // Try to find the package name from Cargo.toml for the binary name
+    let mut bin_name = display_name.clone();
+    for line in cargo_content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name") && !trimmed.contains("[") {
+            if let Some(val) = trimmed.split('=').nth(1) {
+                let name = val.trim().trim_matches('"').trim_matches('\'');
+                if !name.is_empty() {
+                    bin_name = name.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
+    // Check for pre-built binary in target/release
+    let release_bin = dir.join("target").join("release").join(format!("{}.exe", bin_name));
+    let release_bin_unix = dir.join("target").join("release").join(&bin_name);
+    if release_bin.exists() {
+        return Some(DiscoveredMcp {
+            name: display_name,
+            command: release_bin.to_string_lossy().to_string(),
+            args: vec![],
+            source_path: dir.to_string_lossy().to_string(),
+            description,
+        });
+    }
+    if release_bin_unix.exists() {
+        return Some(DiscoveredMcp {
+            name: display_name,
+            command: release_bin_unix.to_string_lossy().to_string(),
+            args: vec![],
+            source_path: dir.to_string_lossy().to_string(),
+            description,
+        });
+    }
+
+    // No pre-built binary — use cargo run
+    Some(DiscoveredMcp {
+        name: display_name,
+        command: "cargo".to_string(),
+        args: vec![
+            "run".to_string(),
+            "--release".to_string(),
+            "--manifest-path".to_string(),
+            dir.join("Cargo.toml").to_string_lossy().to_string(),
+        ],
+        source_path: dir.to_string_lossy().to_string(),
+        description,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Utility: check if command exists on PATH
+// ────────────────────────────────────────────────────────────────────────────
+
+fn which_exists(cmd: &str) -> bool {
+    let mut c = std::process::Command::new(if cfg!(windows) { "where" } else { "which" });
+    c.arg(cmd);
+    c.stdout(std::process::Stdio::null());
+    c.stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c.status().map(|s| s.success()).unwrap_or(false)
 }
 
 // ── Hooks management ──
@@ -1187,7 +1956,17 @@ pub fn run() {
             tabs: Arc::new(Mutex::new(HashMap::new())),
             discord: Arc::new(Mutex::new(discord_state)),
         })
-        .invoke_handler(tauri::generate_handler![send_prompt, stop_claude, steer_claude, save_clipboard_image, list_slash_commands, cleanup_clipboard, generate_title, list_agents, list_mcp_servers, add_mcp_server, remove_mcp_server, check_mcp_server, list_hooks, add_hook, remove_hook, storage_read, storage_write, storage_delete, get_cli_mode, list_directory, detect_editors, open_in_editor, check_claude_cli, read_file_contents, write_file_contents, toggle_discord_rpc, update_discord_rpc, get_discord_rpc_enabled])
+        .invoke_handler(tauri::generate_handler![send_prompt, stop_claude, steer_claude, cleanup_all, save_clipboard_image, list_slash_commands, cleanup_clipboard, generate_title, list_agents, list_mcp_servers, add_mcp_server, remove_mcp_server, check_mcp_server, scan_mcp_directories, list_hooks, add_hook, remove_hook, storage_read, storage_write, storage_delete, get_cli_mode, list_directory, detect_editors, open_in_editor, check_claude_cli, read_file_contents, write_file_contents, toggle_discord_rpc, update_discord_rpc, get_discord_rpc_enabled])
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                // Window is gone — hard-exit immediately.
+                // Graceful cleanup (killing child processes, closing Discord RPC)
+                // is handled by the frontend's fire-and-forget cleanup_all invoke.
+                // We avoid block_on here to prevent deadlocks with in-flight async tasks.
+                // kill_on_drop(true) on child processes provides a secondary safety net.
+                std::process::exit(0);
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running clauke");
 }

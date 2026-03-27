@@ -6,10 +6,12 @@
   let {
     agents,
     open,
+    hidden = false,
     onToggle,
   }: {
     agents: ToolCall[];
     open: boolean;
+    hidden?: boolean;
     onToggle: () => void;
   } = $props();
 
@@ -119,13 +121,15 @@
   let totalCount = $derived(agents.length);
 </script>
 
-<!-- Toggle tab — always visible when there are agents, hidden when panel is open -->
+<!-- Toggle tab — visible when there are agents and panel is closed -->
 {#if !open && totalCount > 0}
   <button
     class="panel-tab"
     class:has-active={activeCount > 0}
-    onclick={onToggle}
+    class:tab-hidden={hidden}
+    onclick={hidden ? undefined : onToggle}
     title="Show agents"
+    disabled={hidden}
   >
     <span class="tab-icon">A</span>
     {#if activeCount > 0}
@@ -199,7 +203,7 @@
               {/if}
             {:else if agent.isComplete}
               <div class="agent-activity done-activity">
-                <span class="activity-done-label">DONE!</span>
+                <span class="activity-done-label">done</span>
               </div>
             {/if}
           {/if}
@@ -285,35 +289,45 @@
   /* ── Toggle tab ── */
   .panel-tab {
     position: absolute;
-    right: 0;
+    right: 10px;
     top: 58%;
     transform: translateY(-50%);
     z-index: 10;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 4px;
-    padding: 8px 5px;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
     background: var(--bg-glass);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border-subtle);
-    border-right: none;
-    border-radius: 8px 0 0 8px;
+    border-radius: 8px;
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all 0.2s var(--ease-out-quart);
+    transition: opacity 0.3s ease, transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+      background 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  }
+
+  .panel-tab.tab-hidden {
+    opacity: 0;
+    transform: translateY(-50%) translateX(20px) scale(0.8);
+    pointer-events: none;
   }
 
   .panel-tab:hover {
     color: var(--text);
     background: var(--bg-glass-hover);
     border-color: var(--border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transform: translateY(-50%) scale(1.05);
   }
 
   .tab-icon {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     line-height: 1;
   }
@@ -323,9 +337,12 @@
   }
 
   .tab-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
     font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 600;
+    font-size: 8px;
+    font-weight: 700;
     line-height: 1;
     min-width: 14px;
     height: 14px;
@@ -333,13 +350,13 @@
     align-items: center;
     justify-content: center;
     border-radius: 7px;
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.25);
     color: var(--text);
     animation: fadeIn 0.3s var(--ease-out-expo);
   }
 
   .tab-badge.dim {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.08);
     color: var(--text-tertiary);
   }
 
@@ -738,7 +755,7 @@
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: rgba(255, 100, 100, 0.5);
+    background: var(--color-error);
   }
 
   .child-icon {
@@ -864,11 +881,6 @@
   .thinking-text {
     font-style: italic;
     opacity: 0.6;
-  }
-
-  :global([data-theme="light"]) .agent-panel {
-    background: var(--glass-panel-bg);
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.5);
   }
 
   :global([data-theme="light"]) .children-list {

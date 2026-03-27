@@ -116,6 +116,8 @@
           sessionId: t.sessionId,
           permissionMode: t.permissionMode || "bypass",
           contextTokens: t.contextTokens || undefined,
+          usage: t.usage || undefined,
+          totalCostUsd: t.totalCostUsd || undefined,
           systemPrompt: t.systemPrompt || "",
           addDirs: Array.isArray(t.addDirs) ? t.addDirs : undefined,
           agent: t.agent || undefined,
@@ -145,11 +147,11 @@
     return messages.map((m) => ({
       ...m,
       content: m.content.map((b) => {
-        if (b.type === "tool_call" && b.toolCall.result && b.toolCall.result.length > 800) {
-          return { ...b, toolCall: { ...b.toolCall, result: b.toolCall.result.slice(0, 800) + "\n…(truncated)" } };
+        if (b.type === "tool_call" && b.toolCall.result && b.toolCall.result.length > 4000) {
+          return { ...b, toolCall: { ...b.toolCall, result: b.toolCall.result.slice(0, 4000) + "\n…(truncated)" } };
         }
-        if (b.type === "thinking" && b.text.length > 500) {
-          return { ...b, text: b.text.slice(0, 500) + "\n…(truncated)" };
+        if (b.type === "thinking" && b.text.length > 2000) {
+          return { ...b, text: b.text.slice(0, 2000) + "\n…(truncated)" };
         }
         return b;
       }),
@@ -167,6 +169,8 @@
       permissionMode: t.permissionMode,
       sessionId: t.sessionId,
       contextTokens: t.contextTokens,
+      usage: t.usage,
+      totalCostUsd: t.totalCostUsd,
       systemPrompt: t.systemPrompt,
       addDirs: t.addDirs,
       agent: t.agent,
@@ -321,13 +325,24 @@
   }
 
   // Auto-save session whenever tabs change (debounced)
+  // Track deep content changes — not just message count but also last message content length
+  // so streaming updates and in-place edits trigger saves too
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    // Read reactive state to track changes
-    const _track = JSON.stringify(tabs.map(t => ({ id: t.id, name: t.name, msgCount: t.messages.length, sessionId: t.sessionId })));
+    const _track = JSON.stringify(tabs.map(t => {
+      const lastMsg = t.messages[t.messages.length - 1];
+      const contentLen = lastMsg?.content?.reduce((s: number, b) => {
+        if (b.type === "text") return s + b.text.length;
+        if (b.type === "thinking") return s + b.text.length;
+        if (b.type === "tool_call") return s + (b.toolCall.result?.length || 0);
+        return s;
+      }, 0) || 0;
+      return { id: t.id, name: t.name, msgCount: t.messages.length, sessionId: t.sessionId, contentLen };
+    }));
     clearTimeout(saveTimer);
     saveTimer = setTimeout(persistSession, 500);
-    return () => clearTimeout(saveTimer);
+    // Don't clear the timer on cleanup — let the pending save complete.
+    // The onMount cleanup and beforeunload/closeRequested handlers handle final saves.
   });
 
   // ── Discord RPC: update presence on state transitions ──
@@ -387,6 +402,15 @@
     const handleBeforeUnload = () => persistSession();
     window.addEventListener("beforeunload", handleBeforeUnload);
 
+    // Tauri window close handler — persist session + best-effort cleanup
+    // Don't preventDefault — let the window close naturally.
+    // Rust-side Destroyed handler handles process cleanup before exit.
+    const unlistenClose = appWindow.onCloseRequested(() => {
+      clearTimeout(saveTimer);
+      persistSession();
+      invoke("cleanup_all").catch(() => {});
+    });
+
     // Try to restore from filesystem (async — upgrades from localStorage)
     invoke<string | null>("storage_read", { key: "session" }).then((raw) => {
       if (raw) {
@@ -422,16 +446,39 @@
       if (result.sessionId) {
         tab.sessionId = result.sessionId;
       }
-      // Accumulate token usage
+      // Token usage handling:
+      // - Intermediate assistant events have per-call usage → show live during generation
+      // - The final result event (turnComplete) has authoritative aggregated usage for the turn
       if (result.usage) {
-        tab.usage = addUsage(tab.usage || emptyUsage(), result.usage);
+        if (result.turnComplete) {
+          // Final result: this is the authoritative total for this turn.
+          // Add to session accumulator (each turn's result is additive).
+          tab.usage = addUsage(tab.usage || emptyUsage(), result.usage);
+          // Subtract any intermediate usage we already counted from assistant events this turn
+          if (tab._turnUsage) {
+            tab.usage = addUsage(tab.usage, {
+              inputTokens: -tab._turnUsage.inputTokens,
+              outputTokens: -tab._turnUsage.outputTokens,
+              cacheReadTokens: -tab._turnUsage.cacheReadTokens,
+              cacheCreationTokens: -tab._turnUsage.cacheCreationTokens,
+            });
+            tab._turnUsage = undefined;
+          }
+        } else {
+          // Intermediate: live update from assistant event per-call usage
+          if (!tab._turnUsage) tab._turnUsage = emptyUsage();
+          tab._turnUsage = addUsage(tab._turnUsage, result.usage);
+          // Show accumulated including live turn data
+          tab.usage = addUsage(tab.usage || emptyUsage(), result.usage);
+        }
       }
-      // Track context window fill.
-      // The CLI's result event reports cumulative usage across all API calls
-      // in the agentic loop (e.g. 5 tool calls × 150k = 750k+), not the
-      // current context window fill of a single call. Cap at the model's
-      // actual context limit so the indicator stays meaningful.
-      if (result.usage) {
+      // Use CLI-provided cost when available (more accurate than manual calculation)
+      if (result.totalCostUsd) {
+        tab.totalCostUsd = (tab.totalCostUsd || 0) + result.totalCostUsd;
+      }
+      // Context window fill: use latest turn's total context (input + cache = context),
+      // capped at the model's actual context window.
+      if (result.usage && result.turnComplete) {
         const maxCtx = MODEL_CONTEXT_LIMITS[tab.model] || 200_000;
         const ctx = Math.min(
           result.usage.inputTokens + result.usage.cacheReadTokens + result.usage.cacheCreationTokens,
@@ -466,10 +513,11 @@
 
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
-      // Final save before teardown — the debounced $effect cleanup cancels pending saves
+      clearTimeout(saveTimer);
       persistSession();
       unlistenEvent.then((fn) => fn());
       unlistenDone.then((fn) => fn());
+      unlistenClose.then((fn) => fn());
     };
   });
 
@@ -493,6 +541,8 @@
     });
     tab.isRunning = true;
     tab.runStartTime = Date.now();
+    // Immediately persist after user sends a message — don't rely on debounce
+    persistSession();
 
     // Name tab after first prompt — set a quick label, then auto-title in background
     if (tab.messages.filter((m) => m.role === "user").length === 1) {
@@ -588,9 +638,12 @@
   function handleClear() {
     const tab = activeTab;
     if (!tab.isRunning) {
+      cleanupTabState(tab.id);
       tab.messages = [];
       tab.sessionId = undefined;
       tab.usage = undefined;
+      tab.totalCostUsd = undefined;
+      tab._turnUsage = undefined;
       tab.contextTokens = undefined;
       tabs = [...tabs];
       persistSession();
@@ -1007,12 +1060,14 @@
     <AgentPanel
       agents={activeAgents}
       open={agentPanelOpen}
+      hidden={changeTrackerOpen}
       onToggle={() => (agentPanelOpen = !agentPanelOpen)}
     />
     <ChangeTracker
       changes={activeFileChanges}
       fileStats={activeFileStats}
       open={changeTrackerOpen}
+      hidden={agentPanelOpen}
       onToggle={() => (changeTrackerOpen = !changeTrackerOpen)}
       onOpenEditor={openInEditor}
     />
@@ -1061,7 +1116,7 @@
       canCompact={!!activeTab.sessionId && !activeTab.isRunning && (activeTab.contextTokens || 0) > 0}
     />
     <div class="token-bar">
-      <span class="token-stat" title="Input tokens">
+      <span class="token-stat" title="Input tokens (non-cached)">
         <span class="token-label">in</span>
         <span class="token-value">{formatTokens(activeTab.usage?.inputTokens ?? 0)}</span>
       </span>
@@ -1070,17 +1125,30 @@
         <span class="token-value">{formatTokens(activeTab.usage?.outputTokens ?? 0)}</span>
       </span>
       {#if (activeTab.usage?.cacheReadTokens ?? 0) > 0}
-        <span class="token-stat" title="Cache read tokens">
+        <span class="token-stat" title="Tokens read from prompt cache (billed at ~10% input rate)">
           <span class="token-label">cache</span>
           <span class="token-value">{formatTokens(activeTab.usage?.cacheReadTokens ?? 0)}</span>
         </span>
       {/if}
-      <span class="token-stat total" title="Total tokens">
+      {#if (activeTab.usage?.cacheCreationTokens ?? 0) > 0}
+        <span class="token-stat" title="Tokens written to prompt cache (billed at ~125% input rate)">
+          <span class="token-label">cache+</span>
+          <span class="token-value">{formatTokens(activeTab.usage?.cacheCreationTokens ?? 0)}</span>
+        </span>
+      {/if}
+      <span class="token-stat total" title="Total tokens processed (input + output + cache)">
         <span class="token-label">&Sigma;</span>
-        <span class="token-value">{formatTokens((activeTab.usage?.inputTokens ?? 0) + (activeTab.usage?.outputTokens ?? 0))}</span>
+        <span class="token-value">{formatTokens(
+          (activeTab.usage?.inputTokens ?? 0) +
+          (activeTab.usage?.outputTokens ?? 0) +
+          (activeTab.usage?.cacheReadTokens ?? 0) +
+          (activeTab.usage?.cacheCreationTokens ?? 0)
+        )}</span>
       </span>
-      <span class="token-stat cost" title="Estimated API cost for this session">
-        <span class="token-value cost-value">{formatCost(calculateCost(activeTab.usage ?? emptyUsage(), activeTab.model))}</span>
+      <span class="token-stat cost" title={activeTab.totalCostUsd ? "API cost (from CLI)" : "Estimated API cost"}>
+        <span class="token-value cost-value">{formatCost(
+          activeTab.totalCostUsd || calculateCost(activeTab.usage ?? emptyUsage(), activeTab.model)
+        )}</span>
       </span>
     </div>
   </footer>

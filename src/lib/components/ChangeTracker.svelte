@@ -6,12 +6,14 @@
     changes,
     fileStats,
     open,
+    hidden = false,
     onToggle,
     onOpenEditor,
   }: {
     changes: FileChange[];
     fileStats: Map<string, FileStats>;
     open: boolean;
+    hidden?: boolean;
     onToggle: () => void;
     onOpenEditor: (filePath: string) => void;
   } = $props();
@@ -77,7 +79,7 @@
 <!-- Tab handle when closed -->
 {#if !open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="tracker-tab" onclick={onToggle}>
+  <div class="tracker-tab" class:tab-hidden={hidden} onclick={hidden ? undefined : onToggle}>
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
@@ -187,43 +189,56 @@
 <style>
   .tracker-tab {
     position: absolute;
-    right: 0;
+    right: 10px;
     top: 36%;
     transform: translateY(-50%);
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 6px;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
     background: var(--bg-glass);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border-subtle);
-    border-right: none;
-    border-radius: 6px 0 0 6px;
+    border-radius: 8px;
     color: var(--text-tertiary);
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: opacity 0.3s ease, transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+      background 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     z-index: 10;
-    writing-mode: vertical-lr;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  }
+
+  .tracker-tab.tab-hidden {
+    opacity: 0;
+    transform: translateY(-50%) translateX(20px) scale(0.8);
+    pointer-events: none;
   }
 
   .tracker-tab:hover {
     color: var(--text-secondary);
     background: var(--bg-glass-hover);
     border-color: var(--border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transform: translateY(-50%) scale(1.05);
   }
 
   .badge {
-    writing-mode: horizontal-tb;
+    position: absolute;
+    top: -4px;
+    right: -4px;
     font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 600;
-    background: rgba(180, 160, 255, 0.2);
-    color: rgba(180, 160, 255, 0.9);
+    font-size: 8px;
+    font-weight: 700;
+    background: var(--accent-purple);
+    color: var(--bg-base);
     padding: 1px 4px;
     border-radius: 6px;
     min-width: 14px;
     text-align: center;
+    line-height: 1.3;
   }
 
   .tracker-panel {
@@ -352,7 +367,7 @@
 
   .icon-file {
     flex-shrink: 0;
-    color: rgba(180, 160, 255, 0.7);
+    color: var(--accent-purple);
     opacity: 0.8;
   }
 
@@ -360,7 +375,7 @@
     font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 500;
-    color: rgba(200, 180, 255, 0.9);
+    color: var(--accent-purple);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -386,8 +401,8 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .diff-add { color: rgba(100, 220, 140, 0.85); }
-  .diff-rm { color: rgba(255, 100, 100, 0.75); }
+  .diff-add { color: var(--color-add); }
+  .diff-rm { color: var(--color-remove); }
 
   .file-path-row {
     display: flex;
@@ -425,8 +440,8 @@
   }
   .open-btn:hover {
     opacity: 1;
-    color: rgba(180, 160, 255, 0.9);
-    background: rgba(180, 160, 255, 0.1);
+    color: var(--accent-purple);
+    background: var(--accent-purple-soft);
   }
 
   .changes-list {
@@ -441,7 +456,7 @@
   }
 
   .change-item.error {
-    border-left: 2px solid rgba(255, 80, 80, 0.5);
+    border-left: 2px solid var(--color-error);
   }
 
   .change-header {
@@ -463,16 +478,16 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: rgba(100, 220, 140, 0.7);
+    color: var(--color-modify);
     padding: 1px 4px;
     border-radius: 3px;
-    background: rgba(100, 220, 140, 0.08);
+    background: var(--color-modify-bg);
     flex-shrink: 0;
   }
 
   .change-tool.write {
-    color: rgba(100, 180, 255, 0.7);
-    background: rgba(100, 180, 255, 0.08);
+    color: var(--accent-blue);
+    background: var(--accent-blue-soft);
   }
 
   .change-time {
@@ -500,8 +515,8 @@
     font-size: 8px;
     font-weight: 600;
     text-transform: uppercase;
-    color: rgba(255, 80, 80, 0.8);
-    background: rgba(255, 80, 80, 0.1);
+    color: var(--color-error);
+    background: var(--color-error-soft);
     padding: 1px 3px;
     border-radius: 3px;
     flex-shrink: 0;
@@ -532,7 +547,8 @@
   }
 
   :global([data-theme="light"]) .tracker-tab {
-    background: rgba(255, 255, 255, 0.6);
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   }
 
   :global([data-theme="light"]) .file-header:hover {
@@ -543,24 +559,11 @@
     background: rgba(0, 0, 0, 0.03);
   }
 
-  :global([data-theme="light"]) .diff-add {
-    color: rgba(30, 160, 70, 0.9);
-  }
-
-  :global([data-theme="light"]) .diff-rm {
-    color: rgba(210, 50, 50, 0.85);
-  }
-
   :global([data-theme="light"]) .icon-btn:hover {
     background: rgba(0, 0, 0, 0.06);
   }
 
   :global([data-theme="light"]) .change-item {
     background: rgba(0, 0, 0, 0.03);
-  }
-
-  :global([data-theme="light"]) .badge {
-    background: rgba(100, 80, 180, 0.12);
-    color: rgba(100, 80, 180, 0.9);
   }
 </style>

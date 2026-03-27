@@ -287,7 +287,11 @@ impl ClaudeProcess {
     }
 
     /// Kill the running process.
+    /// Drops stdin first so any orphaned writer tasks unblock immediately,
+    /// then signals the stream loop to break and kill the child.
     pub async fn kill(&self) {
+        // Drop stdin so pending write tasks get a broken-pipe error and exit
+        let _ = self.stdin.lock().await.take();
         self.cancel.notify_one();
     }
 }
