@@ -1,6 +1,6 @@
 {
   "productName": "clauke",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "identifier": "com.clauke.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -30,7 +30,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": ["icons/icon.ico"]
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      }
+    }
   }
 }
