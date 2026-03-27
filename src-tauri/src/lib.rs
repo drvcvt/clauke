@@ -31,7 +31,7 @@ struct PromptRequest {
     tab_id: String,
     /// Claude model to use (e.g. "sonnet", "opus", "haiku")
     model: Option<String>,
-    /// Effort level (currently informational)
+    /// Effort level passed to --effort flag (low, medium, high, max)
     effort: Option<String>,
     /// Session ID for resuming a conversation
     session_id: Option<String>,
@@ -72,6 +72,7 @@ async fn send_prompt(
 
     let cwd = request.cwd.clone();
     let model = request.model.clone();
+    let effort = request.effort.clone();
     let resume = request.session_id.clone();
     let images = request.images.clone().unwrap_or_default();
     let skip_perms = request.skip_permissions.unwrap_or(true);
@@ -87,6 +88,7 @@ async fn send_prompt(
             &request.prompt,
             cwd.as_deref(),
             model.as_deref(),
+            effort.as_deref(),
             resume.as_deref(),
             &images,
             skip_perms,
@@ -1817,7 +1819,7 @@ async fn toggle_discord_rpc(state: State<'_, AppState>, enabled: bool) -> Result
                         .timestamps(activity::Timestamps::new().start(ts))
                         .assets(
                             activity::Assets::new()
-                                .large_image("clauke_icon")
+                                .large_image("https://raw.githubusercontent.com/drvcvt/clauke/master/src-tauri/icons/icon.png")
                                 .large_text("Clauke - Claude Code Wrapper"),
                         ),
                 );
@@ -1880,7 +1882,7 @@ async fn update_discord_rpc(
             .timestamps(activity::Timestamps::new().start(ts))
             .assets(
                 activity::Assets::new()
-                    .large_image("clauke_icon")
+                    .large_image("https://raw.githubusercontent.com/drvcvt/clauke/master/src-tauri/icons/icon.png")
                     .large_text("Clauke - Claude Code Wrapper"),
             ),
     );
@@ -1931,7 +1933,7 @@ pub fn run() {
                     .timestamps(activity::Timestamps::new().start(ts))
                     .assets(
                         activity::Assets::new()
-                            .large_image("clauke_icon")
+                            .large_image("https://raw.githubusercontent.com/drvcvt/clauke/master/src-tauri/icons/icon.png")
                             .large_text("Clauke - Claude Code Wrapper"),
                     ),
             );
