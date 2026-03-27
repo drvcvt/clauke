@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 /// Shared state: one Claude process per tab.
@@ -323,10 +323,11 @@ async fn cleanup_all(state: State<'_, AppState>) -> Result<(), String> {
     for proc in procs {
         proc.kill().await;
     }
-    // Close Discord RPC connection if active
+    // Clear and close Discord RPC connection
     {
         let mut discord = state.discord.lock().await;
         if let Some(ref mut client) = discord.client {
+            let _ = client.clear_activity();
             let _ = client.close();
         }
         discord.client = None;
@@ -1994,13 +1995,20 @@ pub fn run() {
             discord: Arc::new(Mutex::new(discord_state)),
         })
         .invoke_handler(tauri::generate_handler![send_prompt, stop_claude, steer_claude, cleanup_all, save_clipboard_image, list_slash_commands, cleanup_clipboard, generate_title, list_agents, list_mcp_servers, add_mcp_server, remove_mcp_server, check_mcp_server, scan_mcp_directories, list_hooks, add_hook, remove_hook, storage_read, storage_write, storage_delete, get_cli_mode, list_directory, detect_editors, open_in_editor, check_claude_cli, read_file_contents, write_file_contents, toggle_discord_rpc, update_discord_rpc, get_discord_rpc_enabled])
-        .on_window_event(|_window, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                // Window is gone — hard-exit immediately.
-                // Graceful cleanup (killing child processes, closing Discord RPC)
-                // is handled by the frontend's fire-and-forget cleanup_all invoke.
-                // We avoid block_on here to prevent deadlocks with in-flight async tasks.
-                // kill_on_drop(true) on child processes provides a secondary safety net.
+                // Synchronously clear Discord RPC before exiting so Discord doesn't
+                // keep showing a stale presence. try_lock avoids deadlocks if an async
+                // task currently holds the mutex — in that case we just exit anyway.
+                if let Some(app_state) = window.try_state::<AppState>() {
+                    if let Ok(mut discord) = app_state.discord.try_lock() {
+                        if let Some(ref mut client) = discord.client {
+                            let _: Result<(), _> = client.clear_activity();
+                            let _ = client.close();
+                        }
+                        discord.client = None;
+                    }
+                }
                 std::process::exit(0);
             }
         })
