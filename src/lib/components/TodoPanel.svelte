@@ -22,11 +22,11 @@
     <div class="todo-header">
       <div class="progress-ring">
         <svg width="16" height="16" viewBox="0 0 16 16">
-          <circle cx="8" cy="8" r="6" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="2" />
+          <circle cx="8" cy="8" r="6" fill="none" stroke="var(--ring-track, rgba(255,255,255,0.06))" stroke-width="2" />
           <circle
             cx="8" cy="8" r="6"
             fill="none"
-            stroke="rgba(63, 185, 80, 0.6)"
+            stroke="var(--color-success)"
             stroke-width="2"
             stroke-linecap="round"
             stroke-dasharray={2 * Math.PI * 6}
@@ -51,7 +51,7 @@
           <div class="todo-item" class:completed={todo.status === "completed"} class:active={todo.status === "in_progress"}>
             <span class="todo-check">
               {#if todo.status === "completed"}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(63, 185, 80, 0.8)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
               {:else if todo.status === "in_progress"}
@@ -155,7 +155,7 @@
 
   .todo-item.completed .todo-text {
     text-decoration: line-through;
-    text-decoration-color: rgba(63, 185, 80, 0.3);
+    text-decoration-color: var(--color-success-soft);
   }
 
   .todo-check {
@@ -171,7 +171,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: rgba(251, 191, 36, 0.6);
+    background: var(--color-warning);
     animation: glow 2s ease-in-out infinite;
   }
 
@@ -193,5 +193,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  :global([data-theme="light"]) .progress-ring circle {
+    stroke: rgba(0, 0, 0, 0.08) !important;
   }
 </style>

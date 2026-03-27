@@ -190,6 +190,51 @@
               {/if}
             </div>
           </div>
+        {:else if block.toolCall.name === "Agent" && block.toolCall.isComplete}
+          {@const toolChildren = (block.toolCall.children || []).filter(c => c.name !== "Thinking")}
+          {@const duration = block.toolCall.endTime && block.toolCall.startTime
+            ? ((block.toolCall.endTime - block.toolCall.startTime) / 1000)
+            : null}
+          <div class="agent-complete" class:agent-error={block.toolCall.isError}>
+            <div class="agent-complete-header">
+              <span class="agent-complete-icon">A</span>
+              <span class="agent-complete-label">agent</span>
+              {#if block.toolCall.input.description}
+                <span class="agent-complete-desc">{String(block.toolCall.input.description).slice(0, 60)}</span>
+              {/if}
+              <span class="agent-complete-meta">
+                {#if toolChildren.length > 0}
+                  <span class="agent-complete-stat">{toolChildren.length} tool{toolChildren.length !== 1 ? 's' : ''}</span>
+                {/if}
+                {#if duration !== null}
+                  <span class="agent-complete-stat">{duration < 60 ? duration.toFixed(1) + 's' : Math.floor(duration / 60) + 'm' + Math.floor(duration % 60) + 's'}</span>
+                {/if}
+                {#if block.toolCall.isError}
+                  <span class="agent-complete-err">failed</span>
+                {/if}
+              </span>
+            </div>
+            {#if toolChildren.length > 0}
+              <div class="agent-complete-children">
+                {#each toolChildren as child}
+                  <div class="agent-child" class:agent-child-error={child.isError}>
+                    <span class="agent-child-icon">{getToolIcon(child.name)}</span>
+                    <span class="agent-child-name">{child.name}</span>
+                    {#if child.input.file_path}
+                      <span class="agent-child-detail">{String(child.input.file_path).split(/[\\/]/).pop()}</span>
+                    {:else if child.input.command}
+                      <span class="agent-child-detail">{String(child.input.command).slice(0, 40)}</span>
+                    {:else if child.input.pattern}
+                      <span class="agent-child-detail">{String(child.input.pattern).slice(0, 30)}</span>
+                    {/if}
+                    {#if child.isError}
+                      <span class="agent-child-err">err</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
         {/if}
       {/if}
     {/each}
@@ -319,6 +364,11 @@
     border: 1px solid var(--border-subtle);
     border-radius: 4px;
     padding: 1px 5px;
+  }
+
+  /* Fix: rgba(255,255,255,0.06) is invisible on light backgrounds */
+  :global([data-theme="light"]) .prose :global(code) {
+    background: rgba(0, 0, 0, 0.06);
   }
 
   .prose :global(pre) {
@@ -489,7 +539,8 @@
     font-size: 12px;
     line-height: 1.55;
     color: var(--text-tertiary);
-    opacity: 0.55;
+    /* Fix: was 0.55 which stacked with text-tertiary (~22%) to ~12% visibility */
+    opacity: 0.85;
     margin: 2px 0 6px;
     word-break: break-word;
     animation: slideUp 0.3s var(--ease-out-expo);
@@ -508,6 +559,11 @@
     background: rgba(255, 255, 255, 0.04);
     border-radius: 3px;
     padding: 0 3px;
+  }
+
+  /* Fix: rgba(255,255,255,0.04) is invisible on light backgrounds */
+  :global([data-theme="light"]) .thinking-flow :global(code) {
+    background: rgba(0, 0, 0, 0.06);
   }
 
   .thinking-flow :global(strong) {
@@ -695,6 +751,146 @@
   .agent-indicator-tool-icon {
     font-size: 9px;
     opacity: 0.5;
+  }
+
+  /* ── Completed Agent summary ── */
+  .agent-complete {
+    margin: 2px 0 6px;
+    border-radius: 6px;
+    background: rgba(140, 120, 220, 0.04);
+    border: 1px solid rgba(140, 120, 220, 0.1);
+    overflow: hidden;
+    animation: slideUp 0.3s var(--ease-out-expo);
+  }
+
+  .agent-complete.agent-error {
+    border-color: rgba(255, 100, 100, 0.2);
+    background: rgba(255, 100, 100, 0.04);
+  }
+
+  .agent-complete-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .agent-complete-icon {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    background: rgba(140, 120, 220, 0.12);
+    color: rgba(160, 140, 240, 0.8);
+    font-size: 9px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .agent-complete-label {
+    font-weight: 500;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: rgba(160, 140, 240, 0.6);
+    flex-shrink: 0;
+  }
+
+  .agent-complete-desc {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .agent-complete-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .agent-complete-stat {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    opacity: 0.7;
+  }
+
+  .agent-complete-err {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: rgba(255, 100, 100, 0.8);
+  }
+
+  .agent-complete-children {
+    border-top: 1px solid rgba(140, 120, 220, 0.08);
+    padding: 4px 10px 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 6px;
+  }
+
+  .agent-child {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    opacity: 0.65;
+  }
+
+  .agent-child-error {
+    color: rgba(255, 100, 100, 0.7);
+  }
+
+  .agent-child-icon {
+    font-size: 8px;
+    opacity: 0.5;
+  }
+
+  .agent-child-name {
+    font-weight: 500;
+  }
+
+  .agent-child-detail {
+    opacity: 0.5;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-child-err {
+    font-size: 8px;
+    font-weight: 600;
+    color: rgba(255, 100, 100, 0.7);
+    text-transform: uppercase;
+  }
+
+  :global([data-theme="light"]) .agent-complete {
+    background: rgba(100, 80, 200, 0.03);
+    border-color: rgba(100, 80, 200, 0.08);
+  }
+
+  :global([data-theme="light"]) .agent-complete-icon {
+    background: rgba(100, 80, 200, 0.1);
+    color: rgba(100, 80, 200, 0.7);
+  }
+
+  :global([data-theme="light"]) .agent-complete-label {
+    color: rgba(100, 80, 200, 0.5);
   }
 
   :global([data-theme="light"]) .agent-indicator {

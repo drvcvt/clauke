@@ -237,30 +237,33 @@
 <style>
   .filetree-tab {
     position: absolute;
-    left: 0;
+    left: 10px;
     top: 50%;
     transform: translateY(-50%);
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 6px;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
     background: var(--bg-glass);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border-subtle);
-    border-left: none;
-    border-radius: 0 6px 6px 0;
+    border-radius: 8px;
     color: var(--text-tertiary);
     cursor: pointer;
     transition: all 0.2s ease;
     z-index: 10;
-    writing-mode: vertical-lr;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   }
 
   .filetree-tab:hover {
     color: var(--text-secondary);
     background: var(--bg-glass-hover);
     border-color: var(--border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transform: translateY(-50%) scale(1.05);
   }
 
   .filetree-panel {
@@ -394,7 +397,7 @@
   }
 
   .tree-item.modified .icon-file {
-    color: rgba(180, 160, 255, 0.7);
+    color: var(--color-modify);
     opacity: 0.8;
   }
 
@@ -414,7 +417,7 @@
   }
 
   .tree-item.modified .name {
-    color: rgba(200, 180, 255, 0.9);
+    color: var(--color-modify);
   }
 
   .file-size {
@@ -438,11 +441,11 @@
   }
 
   .diff-add {
-    color: rgba(100, 220, 140, 0.85);
+    color: var(--color-add);
   }
 
   .diff-rm {
-    color: rgba(255, 100, 100, 0.75);
+    color: var(--color-remove);
   }
 
   .loading-dot {
@@ -486,7 +489,8 @@
   }
 
   :global([data-theme="light"]) .filetree-tab {
-    background: rgba(255, 255, 255, 0.6);
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   }
 
   :global([data-theme="light"]) .tree-item:hover {

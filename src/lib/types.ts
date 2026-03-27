@@ -161,6 +161,8 @@ export interface Tab {
   usage?: TokenUsage;
   /** Last input token count — approximates current context window fill level */
   contextTokens?: number;
+  /** Authoritative session cost from CLI (accumulated total_cost_usd) */
+  totalCostUsd?: number;
   permissionMode: PermissionMode;
   /** Per-tab system prompt (overrides global default when set) */
   systemPrompt?: string;
@@ -170,6 +172,8 @@ export interface Tab {
   agent?: string;
   /** Timestamp when the current run started (for elapsed timer) */
   runStartTime?: number;
+  /** Internal: intermediate usage accumulated during current turn (reset on turnComplete) */
+  _turnUsage?: TokenUsage;
 }
 
 /** Agent entry from `claude agents` output */
@@ -502,4 +506,374 @@ export const TOOL_ICONS: Record<string, string> = {
 
 export function getToolIcon(name: string): string {
   return TOOL_ICONS[name] || "#";
+}
+
+/** Theme preset — defines all CSS custom properties for a complete theme */
+export interface ThemePreset {
+  id: string;
+  name: string;
+  base: "dark" | "light";
+  vars: Record<string, string>;
+}
+
+/** Built-in theme presets */
+export const THEME_PRESETS: ThemePreset[] = [
+  {
+    id: "midnight",
+    name: "Midnight Cloak",
+    base: "dark",
+    vars: {
+      "--bg-base": "#0b0b0e",
+      "--accent-purple": "rgba(167, 139, 250, 0.9)",
+      "--accent-purple-soft": "rgba(167, 139, 250, 0.15)",
+      "--accent-blue": "rgba(130, 170, 255, 0.9)",
+      "--accent-blue-soft": "rgba(130, 170, 255, 0.12)",
+    },
+  },
+  {
+    id: "daylight",
+    name: "Daylight",
+    base: "light",
+    vars: {
+      "--bg-base": "#f5f5f7",
+      "--accent-purple": "rgba(124, 58, 237, 0.9)",
+      "--accent-purple-soft": "rgba(124, 58, 237, 0.1)",
+      "--accent-blue": "rgba(37, 99, 235, 0.9)",
+      "--accent-blue-soft": "rgba(37, 99, 235, 0.08)",
+    },
+  },
+  {
+    id: "abyss",
+    name: "Abyss",
+    base: "dark",
+    vars: {
+      "--bg-base": "#050510",
+      "--accent-purple": "rgba(100, 120, 255, 0.9)",
+      "--accent-purple-soft": "rgba(100, 120, 255, 0.15)",
+      "--accent-blue": "rgba(80, 180, 255, 0.9)",
+      "--accent-blue-soft": "rgba(80, 180, 255, 0.12)",
+      "--color-success": "rgba(60, 200, 160, 0.9)",
+      "--color-success-soft": "rgba(60, 200, 160, 0.12)",
+    },
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    base: "dark",
+    vars: {
+      "--bg-base": "#0e0808",
+      "--accent-purple": "rgba(255, 140, 100, 0.9)",
+      "--accent-purple-soft": "rgba(255, 140, 100, 0.15)",
+      "--accent-blue": "rgba(255, 180, 120, 0.9)",
+      "--accent-blue-soft": "rgba(255, 180, 120, 0.12)",
+      "--color-success": "rgba(140, 220, 100, 0.9)",
+      "--color-success-soft": "rgba(140, 220, 100, 0.12)",
+    },
+  },
+  {
+    id: "forest",
+    name: "Forest",
+    base: "dark",
+    vars: {
+      "--bg-base": "#060e08",
+      "--accent-purple": "rgba(120, 220, 160, 0.9)",
+      "--accent-purple-soft": "rgba(120, 220, 160, 0.12)",
+      "--accent-blue": "rgba(100, 200, 180, 0.9)",
+      "--accent-blue-soft": "rgba(100, 200, 180, 0.1)",
+      "--color-success": "rgba(140, 230, 120, 0.9)",
+      "--color-success-soft": "rgba(140, 230, 120, 0.12)",
+    },
+  },
+  {
+    id: "snow",
+    name: "Snow",
+    base: "light",
+    vars: {
+      "--bg-base": "#fafafa",
+      "--accent-purple": "rgba(99, 102, 241, 0.9)",
+      "--accent-purple-soft": "rgba(99, 102, 241, 0.1)",
+      "--accent-blue": "rgba(59, 130, 246, 0.9)",
+      "--accent-blue-soft": "rgba(59, 130, 246, 0.08)",
+    },
+  },
+  {
+    id: "graphite",
+    name: "Graphite",
+    base: "dark",
+    vars: {
+      "--bg-base": "#1a1a1e",
+      "--bg-surface": "rgba(255, 255, 255, 0.03)",
+      "--bg-elevated": "rgba(255, 255, 255, 0.05)",
+      "--accent-purple": "rgba(160, 170, 190, 0.9)",
+      "--accent-purple-soft": "rgba(160, 170, 190, 0.1)",
+      "--accent-blue": "rgba(140, 160, 200, 0.85)",
+      "--accent-blue-soft": "rgba(140, 160, 200, 0.1)",
+      "--color-success": "rgba(120, 200, 150, 0.85)",
+      "--color-success-soft": "rgba(120, 200, 150, 0.1)",
+    },
+  },
+  {
+    id: "obsidian",
+    name: "Obsidian",
+    base: "dark",
+    vars: {
+      "--bg-base": "#000000",
+      "--bg-surface": "rgba(255, 255, 255, 0.03)",
+      "--bg-elevated": "rgba(255, 255, 255, 0.05)",
+      "--accent-purple": "rgba(220, 220, 230, 0.9)",
+      "--accent-purple-soft": "rgba(220, 220, 230, 0.08)",
+      "--accent-blue": "rgba(180, 190, 210, 0.85)",
+      "--accent-blue-soft": "rgba(180, 190, 210, 0.08)",
+      "--color-success": "rgba(130, 210, 160, 0.85)",
+      "--color-success-soft": "rgba(130, 210, 160, 0.1)",
+    },
+  },
+  {
+    id: "slate",
+    name: "Slate",
+    base: "dark",
+    vars: {
+      "--bg-base": "#1e2028",
+      "--bg-surface": "rgba(255, 255, 255, 0.025)",
+      "--bg-elevated": "rgba(255, 255, 255, 0.04)",
+      "--accent-purple": "rgba(120, 150, 200, 0.9)",
+      "--accent-purple-soft": "rgba(120, 150, 200, 0.12)",
+      "--accent-blue": "rgba(100, 140, 190, 0.85)",
+      "--accent-blue-soft": "rgba(100, 140, 190, 0.1)",
+      "--color-success": "rgba(100, 200, 160, 0.85)",
+      "--color-success-soft": "rgba(100, 200, 160, 0.1)",
+    },
+  },
+  {
+    id: "concrete",
+    name: "Concrete",
+    base: "light",
+    vars: {
+      "--bg-base": "#e8e8ec",
+      "--bg-surface": "rgba(0, 0, 0, 0.03)",
+      "--bg-elevated": "rgba(0, 0, 0, 0.05)",
+      "--accent-purple": "rgba(80, 85, 100, 0.9)",
+      "--accent-purple-soft": "rgba(80, 85, 100, 0.1)",
+      "--accent-blue": "rgba(70, 95, 140, 0.85)",
+      "--accent-blue-soft": "rgba(70, 95, 140, 0.08)",
+      "--color-success": "rgba(40, 140, 80, 0.85)",
+      "--color-success-soft": "rgba(40, 140, 80, 0.08)",
+    },
+  },
+  {
+    id: "carbon",
+    name: "Carbon",
+    base: "dark",
+    vars: {
+      "--bg-base": "#121212",
+      "--bg-surface": "rgba(255, 255, 255, 0.04)",
+      "--bg-elevated": "rgba(255, 255, 255, 0.06)",
+      "--accent-purple": "rgba(0, 200, 200, 0.85)",
+      "--accent-purple-soft": "rgba(0, 200, 200, 0.1)",
+      "--accent-blue": "rgba(0, 180, 220, 0.8)",
+      "--accent-blue-soft": "rgba(0, 180, 220, 0.08)",
+      "--color-success": "rgba(0, 210, 140, 0.85)",
+      "--color-success-soft": "rgba(0, 210, 140, 0.1)",
+    },
+  },
+  // ── Community / well-known themes ──
+  {
+    id: "catppuccin-mocha",
+    name: "Catppuccin Mocha",
+    base: "dark",
+    vars: {
+      "--bg-base": "#1e1e2e",
+      "--bg-surface": "rgba(205, 214, 244, 0.04)",
+      "--bg-elevated": "rgba(205, 214, 244, 0.06)",
+      "--accent-purple": "rgba(203, 166, 247, 0.9)",
+      "--accent-purple-soft": "rgba(203, 166, 247, 0.15)",
+      "--accent-blue": "rgba(137, 180, 250, 0.9)",
+      "--accent-blue-soft": "rgba(137, 180, 250, 0.12)",
+      "--color-success": "rgba(166, 227, 161, 0.9)",
+      "--color-success-soft": "rgba(166, 227, 161, 0.12)",
+      "--color-error": "rgba(243, 139, 168, 0.9)",
+      "--color-error-soft": "rgba(243, 139, 168, 0.1)",
+      "--color-warning": "rgba(249, 226, 175, 0.85)",
+      "--color-warning-soft": "rgba(249, 226, 175, 0.12)",
+    },
+  },
+  {
+    id: "catppuccin-latte",
+    name: "Catppuccin Latte",
+    base: "light",
+    vars: {
+      "--bg-base": "#eff1f5",
+      "--bg-surface": "rgba(76, 79, 105, 0.04)",
+      "--bg-elevated": "rgba(76, 79, 105, 0.06)",
+      "--accent-purple": "rgba(136, 57, 239, 0.9)",
+      "--accent-purple-soft": "rgba(136, 57, 239, 0.1)",
+      "--accent-blue": "rgba(30, 102, 245, 0.9)",
+      "--accent-blue-soft": "rgba(30, 102, 245, 0.08)",
+      "--color-success": "rgba(64, 160, 43, 0.9)",
+      "--color-success-soft": "rgba(64, 160, 43, 0.1)",
+      "--color-error": "rgba(210, 15, 57, 0.9)",
+      "--color-error-soft": "rgba(210, 15, 57, 0.08)",
+      "--color-warning": "rgba(223, 142, 29, 0.85)",
+      "--color-warning-soft": "rgba(223, 142, 29, 0.1)",
+    },
+  },
+  {
+    id: "dracula",
+    name: "Dracula",
+    base: "dark",
+    vars: {
+      "--bg-base": "#282a36",
+      "--bg-surface": "rgba(248, 248, 242, 0.04)",
+      "--bg-elevated": "rgba(248, 248, 242, 0.06)",
+      "--accent-purple": "rgba(189, 147, 249, 0.9)",
+      "--accent-purple-soft": "rgba(189, 147, 249, 0.15)",
+      "--accent-blue": "rgba(139, 233, 253, 0.9)",
+      "--accent-blue-soft": "rgba(139, 233, 253, 0.1)",
+      "--color-success": "rgba(80, 250, 123, 0.9)",
+      "--color-success-soft": "rgba(80, 250, 123, 0.12)",
+      "--color-error": "rgba(255, 85, 85, 0.9)",
+      "--color-error-soft": "rgba(255, 85, 85, 0.1)",
+      "--color-warning": "rgba(241, 250, 140, 0.85)",
+      "--color-warning-soft": "rgba(241, 250, 140, 0.1)",
+    },
+  },
+  {
+    id: "nord",
+    name: "Nord",
+    base: "dark",
+    vars: {
+      "--bg-base": "#2e3440",
+      "--bg-surface": "rgba(216, 222, 233, 0.04)",
+      "--bg-elevated": "rgba(216, 222, 233, 0.06)",
+      "--accent-purple": "rgba(180, 142, 173, 0.9)",
+      "--accent-purple-soft": "rgba(180, 142, 173, 0.12)",
+      "--accent-blue": "rgba(136, 192, 208, 0.9)",
+      "--accent-blue-soft": "rgba(136, 192, 208, 0.1)",
+      "--color-success": "rgba(163, 190, 140, 0.9)",
+      "--color-success-soft": "rgba(163, 190, 140, 0.12)",
+      "--color-error": "rgba(191, 97, 106, 0.9)",
+      "--color-error-soft": "rgba(191, 97, 106, 0.1)",
+      "--color-warning": "rgba(235, 203, 139, 0.85)",
+      "--color-warning-soft": "rgba(235, 203, 139, 0.1)",
+    },
+  },
+  {
+    id: "gruvbox",
+    name: "Gruvbox",
+    base: "dark",
+    vars: {
+      "--bg-base": "#282828",
+      "--bg-surface": "rgba(235, 219, 178, 0.04)",
+      "--bg-elevated": "rgba(235, 219, 178, 0.06)",
+      "--accent-purple": "rgba(211, 134, 155, 0.9)",
+      "--accent-purple-soft": "rgba(211, 134, 155, 0.12)",
+      "--accent-blue": "rgba(131, 165, 152, 0.9)",
+      "--accent-blue-soft": "rgba(131, 165, 152, 0.1)",
+      "--color-success": "rgba(184, 187, 38, 0.9)",
+      "--color-success-soft": "rgba(184, 187, 38, 0.12)",
+      "--color-error": "rgba(251, 73, 52, 0.9)",
+      "--color-error-soft": "rgba(251, 73, 52, 0.1)",
+      "--color-warning": "rgba(254, 128, 25, 0.85)",
+      "--color-warning-soft": "rgba(254, 128, 25, 0.1)",
+    },
+  },
+  {
+    id: "tokyo-night",
+    name: "Tokyo Night",
+    base: "dark",
+    vars: {
+      "--bg-base": "#1a1b26",
+      "--bg-surface": "rgba(169, 177, 214, 0.04)",
+      "--bg-elevated": "rgba(169, 177, 214, 0.06)",
+      "--accent-purple": "rgba(187, 154, 247, 0.9)",
+      "--accent-purple-soft": "rgba(187, 154, 247, 0.15)",
+      "--accent-blue": "rgba(122, 162, 247, 0.9)",
+      "--accent-blue-soft": "rgba(122, 162, 247, 0.12)",
+      "--color-success": "rgba(158, 206, 106, 0.9)",
+      "--color-success-soft": "rgba(158, 206, 106, 0.12)",
+      "--color-error": "rgba(247, 118, 142, 0.9)",
+      "--color-error-soft": "rgba(247, 118, 142, 0.1)",
+      "--color-warning": "rgba(224, 175, 104, 0.85)",
+      "--color-warning-soft": "rgba(224, 175, 104, 0.1)",
+    },
+  },
+  {
+    id: "one-dark",
+    name: "One Dark",
+    base: "dark",
+    vars: {
+      "--bg-base": "#282c34",
+      "--bg-surface": "rgba(171, 178, 191, 0.04)",
+      "--bg-elevated": "rgba(171, 178, 191, 0.06)",
+      "--accent-purple": "rgba(198, 120, 221, 0.9)",
+      "--accent-purple-soft": "rgba(198, 120, 221, 0.12)",
+      "--accent-blue": "rgba(97, 175, 239, 0.9)",
+      "--accent-blue-soft": "rgba(97, 175, 239, 0.1)",
+      "--color-success": "rgba(152, 195, 121, 0.9)",
+      "--color-success-soft": "rgba(152, 195, 121, 0.12)",
+      "--color-error": "rgba(224, 108, 117, 0.9)",
+      "--color-error-soft": "rgba(224, 108, 117, 0.1)",
+      "--color-warning": "rgba(229, 192, 123, 0.85)",
+      "--color-warning-soft": "rgba(229, 192, 123, 0.1)",
+    },
+  },
+  {
+    id: "monokai",
+    name: "Monokai",
+    base: "dark",
+    vars: {
+      "--bg-base": "#272822",
+      "--bg-surface": "rgba(248, 248, 242, 0.04)",
+      "--bg-elevated": "rgba(248, 248, 242, 0.06)",
+      "--accent-purple": "rgba(174, 129, 255, 0.9)",
+      "--accent-purple-soft": "rgba(174, 129, 255, 0.12)",
+      "--accent-blue": "rgba(102, 217, 239, 0.9)",
+      "--accent-blue-soft": "rgba(102, 217, 239, 0.1)",
+      "--color-success": "rgba(166, 226, 46, 0.9)",
+      "--color-success-soft": "rgba(166, 226, 46, 0.12)",
+      "--color-error": "rgba(249, 38, 114, 0.9)",
+      "--color-error-soft": "rgba(249, 38, 114, 0.1)",
+      "--color-warning": "rgba(230, 219, 116, 0.85)",
+      "--color-warning-soft": "rgba(230, 219, 116, 0.1)",
+    },
+  },
+  {
+    id: "solarized-dark",
+    name: "Solarized Dark",
+    base: "dark",
+    vars: {
+      "--bg-base": "#002b36",
+      "--bg-surface": "rgba(147, 161, 161, 0.05)",
+      "--bg-elevated": "rgba(147, 161, 161, 0.07)",
+      "--accent-purple": "rgba(108, 113, 196, 0.9)",
+      "--accent-purple-soft": "rgba(108, 113, 196, 0.15)",
+      "--accent-blue": "rgba(38, 139, 210, 0.9)",
+      "--accent-blue-soft": "rgba(38, 139, 210, 0.12)",
+      "--color-success": "rgba(133, 153, 0, 0.9)",
+      "--color-success-soft": "rgba(133, 153, 0, 0.12)",
+      "--color-error": "rgba(220, 50, 47, 0.9)",
+      "--color-error-soft": "rgba(220, 50, 47, 0.1)",
+      "--color-warning": "rgba(181, 137, 0, 0.85)",
+      "--color-warning-soft": "rgba(181, 137, 0, 0.1)",
+    },
+  },
+];
+
+/** Apply a theme preset to the document */
+export function applyThemePreset(preset: ThemePreset) {
+  const root = document.documentElement;
+  // Set base theme (dark/light) which controls the generic variables
+  root.setAttribute("data-theme", preset.base);
+  // Apply preset-specific overrides
+  for (const [key, value] of Object.entries(preset.vars)) {
+    root.style.setProperty(key, value);
+  }
+}
+
+/** Clear preset-specific overrides (revert to base theme defaults) */
+export function clearThemeOverrides(vars: Record<string, string>) {
+  const root = document.documentElement;
+  for (const key of Object.keys(vars)) {
+    root.style.removeProperty(key);
+  }
 }

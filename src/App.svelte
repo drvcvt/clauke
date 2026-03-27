@@ -308,6 +308,12 @@
   /** Extract all Agent tool calls from the active tab's messages (newest first) */
   let activeAgents = $derived.by(() => {
     const msgs = activeTab?.messages ?? [];
+    // Explicitly read content array lengths to ensure Svelte tracks deep mutations.
+    // Without this, $derived may miss push() calls to msg.content in some edge cases.
+    let _contentDepTracker = 0;
+    for (const msg of msgs) {
+      _contentDepTracker += msg.content.length;
+    }
     const agents: ToolCall[] = [];
     for (const msg of msgs) {
       if (msg.role !== "assistant") continue;

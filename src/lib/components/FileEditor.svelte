@@ -119,7 +119,7 @@
     },
     ".cm-content": {
       fontFamily: "var(--font-mono)",
-      caretColor: "rgba(200, 180, 255, 0.9)",
+      caretColor: "var(--accent-purple)",
     },
     ".cm-gutters": {
       background: "rgba(0, 0, 0, 0.1)",
@@ -128,17 +128,17 @@
       opacity: "0.4",
     },
     ".cm-activeLineGutter": {
-      background: "rgba(180, 160, 255, 0.06)",
+      background: "var(--accent-purple-soft)",
       opacity: "1",
     },
     ".cm-activeLine": {
-      background: "rgba(180, 160, 255, 0.04)",
+      background: "var(--accent-purple-soft)",
     },
     ".cm-cursor": {
-      borderLeftColor: "rgba(200, 180, 255, 0.9)",
+      borderLeftColor: "var(--accent-purple)",
     },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-      background: "rgba(180, 160, 255, 0.2) !important",
+      background: "var(--accent-purple-soft) !important",
     },
     ".cm-scroller": {
       fontFamily: "var(--font-mono)",
@@ -367,7 +367,7 @@
 
   .icon-file {
     flex-shrink: 0;
-    color: rgba(180, 160, 255, 0.7);
+    color: var(--accent-purple);
   }
 
   .editor-filename {
@@ -387,7 +387,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: rgba(255, 180, 60, 0.8);
+    background: var(--color-warning);
     flex-shrink: 0;
   }
 
@@ -401,11 +401,11 @@
   .save-msg {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: rgba(100, 220, 140, 0.8);
+    color: var(--color-success);
     animation: fadeIn 0.15s ease;
   }
   .save-msg.error {
-    color: rgba(255, 100, 100, 0.8);
+    color: var(--color-error);
   }
 
   .action-btn {
@@ -423,7 +423,7 @@
     opacity: 0.4;
   }
   .action-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
-  .action-btn.active { opacity: 0.8; color: rgba(180, 160, 255, 0.9); }
+  .action-btn.active { opacity: 0.8; color: var(--accent-purple); }
   .action-btn:disabled { opacity: 0.2; cursor: default; }
 
   .editor-body {
@@ -439,7 +439,7 @@
     color: var(--text-tertiary);
     text-align: center;
   }
-  .editor-error { color: rgba(255, 100, 100, 0.8); }
+  .editor-error { color: var(--color-error); }
 
   /* CodeMirror container — fills editor body */
   .cm-wrapper {
@@ -474,7 +474,7 @@
   .status-lang {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: rgba(180, 160, 255, 0.6);
+    color: var(--accent-purple);
     text-transform: lowercase;
   }
 
@@ -488,7 +488,7 @@
   .status-modified {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: rgba(255, 180, 60, 0.7);
+    color: var(--color-warning);
   }
 
   .status-path {

@@ -52,6 +52,8 @@ export interface EventResult {
   };
   /** True when the current turn is complete (final result event) */
   turnComplete?: boolean;
+  /** Authoritative cost from CLI (total_cost_usd on result event) */
+  totalCostUsd?: number;
 }
 
 /**
@@ -67,7 +69,9 @@ export function processClaudeEvent(
   const activeAgentStack = getAgentStack(tabId || (event.tab_id as string) || "default");
 
   // Debug: log every event so we can trace what the CLI actually sends
-  console.debug("[clauke] event:", type, event);
+  if (import.meta.env.DEV) {
+    console.debug("[clauke] event:", type, event);
+  }
 
   // Get or create the current assistant message
   function getAssistantMessage(): ChatMessage {
@@ -134,11 +138,31 @@ export function processClaudeEvent(
     return true;
   }
 
+  /** Check if a tool name refers to an Agent (case-insensitive) */
+  function isAgentTool(name: string): boolean {
+    return name.trim().toLowerCase() === "agent";
+  }
+
   /**
    * Add a tool call — either as a top-level content block or as a child
    * of the currently-active Agent (if one is running).
    */
   function addToolCall(msg: ChatMessage, tc: ToolCall): void {
+    // Normalize Agent name to canonical casing
+    if (isAgentTool(tc.name) && tc.name !== "Agent") {
+      tc.name = "Agent";
+    }
+
+    // Dedup: if an Agent with this ID already exists, skip it.
+    // This prevents duplicates when the CLI sends both streaming events
+    // AND a full message with the same tool_use blocks.
+    if (tc.name === "Agent" && tc.id && findToolCallGlobal(tc.id)) {
+      if (import.meta.env.DEV) {
+        console.debug("[clauke:agent] dedup — Agent", tc.id, "already exists, skipping");
+      }
+      return;
+    }
+
     // If there's an active Agent and this isn't an Agent itself,
     // nest it as a child of the most recent active Agent.
     if (activeAgentStack.length > 0 && tc.name !== "Agent") {
@@ -160,6 +184,9 @@ export function processClaudeEvent(
     // If this is an Agent tool, push onto the stack
     if (tc.name === "Agent") {
       activeAgentStack.push(tc.id);
+      if (import.meta.env.DEV) {
+        console.debug("[clauke:agent] PUSH", tc.id, "desc:", tc.input.description || tc.input.prompt || "(no desc)", "| stack size:", activeAgentStack.length);
+      }
     }
   }
 
@@ -276,9 +303,10 @@ export function processClaudeEvent(
       tc = findToolCallGlobal(toolUseId);
     }
     if (!tc) {
-      // Fallback: mark the last incomplete tool call
+      // Fallback: mark the last incomplete tool call (heuristic — may misattribute)
       const lastTc = getLastToolCall(msg);
       if (lastTc && !lastTc.isComplete) {
+        console.warn("[clauke] Tool result has no matching ID, falling back to last incomplete tool:", lastTc.name, lastTc.id, "| result event had id:", toolUseId || "(none)");
         tc = lastTc;
       }
     }
@@ -301,23 +329,35 @@ export function processClaudeEvent(
         }
         const idx = activeAgentStack.indexOf(tc.id);
         if (idx !== -1) activeAgentStack.splice(idx, 1);
+        if (import.meta.env.DEV) {
+          console.debug("[clauke:agent] POP", tc.id, "| children:", tc.children?.length ?? 0, "| stack size:", activeAgentStack.length, "| error:", isError);
+        }
       }
     }
     return MODIFIED;
   }
 
-  /** Extract usage data from an event */
+  /** Extract usage data from an event.
+   *  Checks top-level ev.usage (result events) and ev.message.usage (assistant events). */
   function extractUsage(ev: ClaudeEvent): TokenUsage | undefined {
-    const usage = ev.usage as Record<string, unknown> | undefined;
+    // Try top-level usage (result events)
+    let usage = ev.usage as Record<string, unknown> | undefined;
+    // Try message.usage (assistant events carry per-call usage here)
+    if (!usage) {
+      const message = ev.message as Record<string, unknown> | undefined;
+      usage = message?.usage as Record<string, unknown> | undefined;
+    }
     if (!usage) return undefined;
     const input = (usage.input_tokens as number) || 0;
     const output = (usage.output_tokens as number) || 0;
-    if (input === 0 && output === 0) return undefined;
+    const cacheRead = (usage.cache_read_input_tokens as number) || (usage.cache_read_tokens as number) || 0;
+    const cacheWrite = (usage.cache_creation_input_tokens as number) || (usage.cache_creation_tokens as number) || 0;
+    if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) return undefined;
     return {
       inputTokens: input,
       outputTokens: output,
-      cacheReadTokens: (usage.cache_read_input_tokens as number) || (usage.cache_read_tokens as number) || 0,
-      cacheCreationTokens: (usage.cache_creation_input_tokens as number) || (usage.cache_creation_tokens as number) || 0,
+      cacheReadTokens: cacheRead,
+      cacheCreationTokens: cacheWrite,
     };
   }
 
@@ -374,6 +414,12 @@ export function processClaudeEvent(
         markPendingToolsComplete(msg);
         const content = message.content as Array<Record<string, unknown>>;
         if (Array.isArray(content)) {
+          if (import.meta.env.DEV) {
+            const agentBlocks = content.filter((b) => b.type === "tool_use" && (b.name as string)?.trim?.().toLowerCase() === "agent");
+            if (agentBlocks.length > 0) {
+              console.debug("[clauke:agent] Full message contains", agentBlocks.length, "Agent tool_use blocks out of", content.length, "total blocks");
+            }
+          }
           for (const block of content) {
             if (block.type === "thinking") {
               getLastThinkingBlock(msg).text += (block.thinking as string) || (block.text as string) || "";
@@ -403,6 +449,11 @@ export function processClaudeEvent(
             }
           }
         }
+      }
+      // Extract per-call usage from assistant events for live display
+      const assistantUsage = extractUsage(event);
+      if (assistantUsage) {
+        return { modified: true, usage: assistantUsage };
       }
       return MODIFIED;
     }
@@ -488,8 +539,8 @@ export function processClaudeEvent(
         try {
           const parsed = JSON.parse(lastTc.input.__raw as string);
           Object.assign(lastTc.input, parsed);
-        } catch {
-          // Keep raw if parse fails
+        } catch (e) {
+          console.warn("[clauke] Failed to parse streamed tool input JSON for", lastTc.name, "— input may be incomplete. Raw:", String(lastTc.input.__raw).slice(0, 200), e);
         }
         delete lastTc.input.__raw;
       }
@@ -529,13 +580,10 @@ export function processClaudeEvent(
     // Result event — can be either tool_result or final completion
     case "result": {
       const subtype = event.subtype as string | undefined;
-
-      // Always extract usage and session_id from any result event
       const sessionId = event.session_id as string | undefined;
-      const usage = extractUsage(event);
-      const contextTokens = usage?.inputTokens;
 
-      // Tool result disguised as "result" event — match broadly
+      // Tool result disguised as "result" event — match broadly.
+      // Don't return usage here — the final result event has the aggregated total.
       if (
         subtype === "tool_result" ||
         subtype === "tool_use_result" ||
@@ -546,10 +594,14 @@ export function processClaudeEvent(
           event.content ?? event.output,
           event.is_error as boolean | undefined,
         );
-        return { modified: true, sessionId, usage, contextTokens };
+        return { modified: true, sessionId };
       }
 
-      // Final completion — turn is over, all agents must be done
+      // Final completion — turn is over, all agents must be done.
+      // This event carries the authoritative aggregated usage for the entire turn.
+      const usage = extractUsage(event);
+      const totalCostUsd = (event.total_cost_usd as number) || undefined;
+
       const msg = getAssistantMessage();
       const resultText =
         (event.result as string) || (event.text as string) || "";
@@ -557,9 +609,14 @@ export function processClaudeEvent(
         (b) => b.type === "text" && b.text.trim(),
       );
       if (resultText && !hasText) {
-        getLastTextBlock(msg).text = resultText;
+        // Append instead of overwrite — streaming deltas may have added whitespace-only content
+        const textBlock = getLastTextBlock(msg);
+        textBlock.text = textBlock.text.trimEnd() ? textBlock.text + resultText : resultText;
       }
       // Clear agent stack — the turn is finished, nothing is still running
+      if (import.meta.env.DEV && activeAgentStack.length > 0) {
+        console.debug("[clauke:agent] TURN COMPLETE — clearing stack with", activeAgentStack.length, "agents still tracked:", [...activeAgentStack]);
+      }
       activeAgentStack.length = 0;
       // Mark any remaining incomplete tool calls (and their children) as done
       for (const block of msg.content) {
@@ -578,7 +635,7 @@ export function processClaudeEvent(
           }
         }
       }
-      return { modified: true, sessionId, usage, contextTokens, turnComplete: true };
+      return { modified: true, sessionId, usage, totalCostUsd, turnComplete: true };
     }
 
     // Error

@@ -22,9 +22,9 @@
   // Color stages: neutral → warm → hot
   let color = $derived.by(() => {
     if (fill < 0.4) return "rgba(255, 255, 255, 0.35)";
-    if (fill < 0.65) return `hsl(45, 70%, 55%)`;  // warm amber
-    if (fill < 0.85) return `hsl(25, 80%, 55%)`;   // orange
-    return `hsl(5, 80%, 55%)`;                      // red
+    if (fill < 0.65) return `var(--color-warning)`;
+    if (fill < 0.85) return `var(--color-warning-high, #e67e22)`;
+    return `var(--color-error)`;
   });
 
   let glowIntensity = $derived(fill > 0.8 ? (fill - 0.8) * 5 : 0);
@@ -93,7 +93,8 @@
 
   .tooltip {
     position: absolute;
-    bottom: 8px;
+    /* Fix: render above the bar instead of below (was off-screen at app bottom) */
+    bottom: calc(100% + 6px);
     left: 50%;
     transform: translateX(-50%);
     display: flex;
@@ -141,18 +142,18 @@
     font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 500;
-    color: rgba(167, 139, 250, 0.7);
-    background: rgba(167, 139, 250, 0.08);
-    border: 1px solid rgba(167, 139, 250, 0.15);
+    color: var(--accent-purple);
+    background: var(--accent-purple-soft);
+    border: 1px solid var(--accent-purple-soft);
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
   .compact-btn:hover {
-    color: rgba(167, 139, 250, 0.95);
-    background: rgba(167, 139, 250, 0.15);
-    border-color: rgba(167, 139, 250, 0.3);
+    color: var(--accent-purple);
+    background: var(--accent-purple-soft);
+    border-color: var(--accent-purple);
   }
 
   :global([data-theme="light"]) .track {

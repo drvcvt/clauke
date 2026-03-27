@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 128 128">
+    <defs>
+        <linearGradient id="a" x1="20" x2="108" y1="16" y2="112" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#a78bfa"/>
+            <stop offset="50%" stop-color="#7c3aed"/>
+            <stop offset="100%" stop-color="#4c1d95"/>
+        </linearGradient>
+        <linearGradient id="c" x1="40" x2="88" y1="40" y2="88" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#c4b5fd" stop-opacity=".3"/>
+            <stop offset="100%" stop-color="#7c3aed" stop-opacity=".05"/>
+        </linearGradient>
+        <linearGradient id="d" x1="42" x2="86" y1="52" y2="80" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#f5f3ff"/>
+            <stop offset="100%" stop-color="#ddd6fe"/>
+        </linearGradient>
+        <filter id="b" width="130%" height="130%" x="-10%" y="-10%">
+            <feDropShadow dx="0" dy="2" flood-color="#4c1d95" flood-opacity=".35" stdDeviation="4"/>
+        </filter>
+    </defs>
+    <path fill="url(#a)" d="M64 8C44 8 22 22 20 48c-2 20 2 42 14 56l12 12c4-8 8-20 10-32 2 12 4 24 8 34 4-10 6-22 8-34 2 12 6 24 10 32l12-12c12-14 16-36 14-56-2-26-24-40-44-40" filter="url(#b)"/>
+    <path stroke="#a78bfa" stroke-linecap="round" stroke-width="1.5" d="M48 36c-4 16-4 36-2 56M80 36c4 16 4 36 2 56" opacity=".4"/>
+    <ellipse cx="64" cy="62" fill="url(#c)" rx="22" ry="24"/>
+    <g fill="url(#d)">
+        <path fill="none" stroke="url(#d)" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.5" d="m46 56 10 8-10 8"/>
+        <rect width="16" height="3.5" x="62" y="70" rx="1.5"/>
+    </g>
+</svg>

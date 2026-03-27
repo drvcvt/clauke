@@ -65,6 +65,144 @@
     return { kind: "working" as const, text: "" };
   });
 
+  // ── Three-body gravitational simulation ──
+  let orbitCanvas: HTMLCanvasElement | undefined;
+  let animFrame: number | undefined;
+
+  interface Body {
+    x: number; y: number;
+    vx: number; vy: number;
+    mass: number;
+    radius: number;
+    color: string;
+    glow: string;
+    trail: { x: number; y: number }[];
+  }
+
+  function initBodies(): Body[] {
+    // Stable figure-8-ish initial conditions (centered in 56x36 canvas)
+    const cx = 28, cy = 18;
+    return [
+      { x: cx + 5, y: cy, vx: 0, vy: -6, mass: 1.0, radius: 1.8,
+        color: "rgba(167, 139, 250, 1)", glow: "rgba(167, 139, 250, 0.5)",
+        trail: [] },
+      { x: cx - 2.5, y: cy - 4, vx: 5.2, vy: 3, mass: 1.0, radius: 1.4,
+        color: "rgba(130, 170, 255, 0.95)", glow: "rgba(130, 170, 255, 0.45)",
+        trail: [] },
+      { x: cx - 2.5, y: cy + 4, vx: -5.2, vy: 3, mass: 1.0, radius: 1.2,
+        color: "rgba(200, 180, 255, 0.95)", glow: "rgba(200, 180, 255, 0.4)",
+        trail: [] },
+    ];
+  }
+
+  let bodies: Body[] = initBodies();
+
+  function stepSimulation(bodies: Body[], dt: number, G: number) {
+    const n = bodies.length;
+    // Compute gravitational acceleration
+    const ax = new Float64Array(n);
+    const ay = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = bodies[j].x - bodies[i].x;
+        const dy = bodies[j].y - bodies[i].y;
+        const distSq = dx * dx + dy * dy + 4; // softening to prevent singularities
+        const dist = Math.sqrt(distSq);
+        const force = G / (distSq * dist);
+        const fx = force * dx;
+        const fy = force * dy;
+        ax[i] += fx * bodies[j].mass;
+        ay[i] += fy * bodies[j].mass;
+        ax[j] -= fx * bodies[i].mass;
+        ay[j] -= fy * bodies[i].mass;
+      }
+    }
+    // Velocity Verlet integration
+    const cx = 28, cy = 18;
+    for (let i = 0; i < n; i++) {
+      const b = bodies[i];
+      b.vx += ax[i] * dt;
+      b.vy += ay[i] * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      // Soft boundary: apply restoring force if too far from center
+      const bx = b.x - cx, by = b.y - cy;
+      const bDist = Math.sqrt(bx * bx + by * by);
+      if (bDist > 9) {
+        const restoring = 0.6 * (bDist - 9);
+        b.vx -= (bx / bDist) * restoring * dt;
+        b.vy -= (by / bDist) * restoring * dt;
+      }
+      // Trail
+      b.trail.push({ x: b.x, y: b.y });
+      if (b.trail.length > 30) b.trail.shift();
+    }
+  }
+
+  function renderBodies(ctx: CanvasRenderingContext2D, bodies: Body[]) {
+    ctx.clearRect(0, 0, 56, 36);
+    // Draw trails
+    for (const b of bodies) {
+      if (b.trail.length < 2) continue;
+      for (let i = 1; i < b.trail.length; i++) {
+        const alpha = (i / b.trail.length) * 0.3;
+        ctx.strokeStyle = b.color.replace(/[\d.]+\)$/, `${alpha})`);
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(b.trail[i - 1].x, b.trail[i - 1].y);
+        ctx.lineTo(b.trail[i].x, b.trail[i].y);
+        ctx.stroke();
+      }
+    }
+    // Draw bodies with glow
+    for (const b of bodies) {
+      ctx.save();
+      ctx.shadowColor = b.glow;
+      ctx.shadowBlur = 4;
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function startOrbitAnimation() {
+    if (animFrame) cancelAnimationFrame(animFrame);
+    bodies = initBodies();
+    const G = 80;
+    const dt = 0.016;
+    const substeps = 3;
+
+    function loop() {
+      if (!orbitCanvas) return;
+      const ctx = orbitCanvas.getContext("2d");
+      if (!ctx) return;
+      for (let s = 0; s < substeps; s++) {
+        stepSimulation(bodies, dt / substeps, G);
+      }
+      renderBodies(ctx, bodies);
+      animFrame = requestAnimationFrame(loop);
+    }
+    animFrame = requestAnimationFrame(loop);
+  }
+
+  function stopOrbitAnimation() {
+    if (animFrame) {
+      cancelAnimationFrame(animFrame);
+      animFrame = undefined;
+    }
+  }
+
+  $effect(() => {
+    if (isRunning && orbitCanvas) {
+      startOrbitAnimation();
+    } else {
+      stopOrbitAnimation();
+    }
+    return () => stopOrbitAnimation();
+  });
+
   let scrollContainer: HTMLDivElement;
   let userScrolledUp = $state(false);
   let programmaticScroll = false;
@@ -94,18 +232,27 @@
   }
 
   // Auto-scroll when messages update (content changes during streaming)
+  // Track all relevant state changes — not just the last block of the last message
   $effect(() => {
-    // Track array length for new messages
     const len = messages.length;
-    // Track last message content for streaming updates
     if (len > 0) {
       const last = messages[len - 1];
       const cLen = last.content.length;
-      if (cLen > 0) {
-        const block = last.content[cLen - 1];
-        if (block.type === "text") void block.text.length;
-        if (block.type === "tool_call") void block.toolCall.isComplete;
+      // Track total text + thinking length across ALL blocks (catches streaming deltas)
+      let _textLen = 0;
+      let _toolComplete = 0;
+      for (let i = 0; i < cLen; i++) {
+        const block = last.content[i];
+        if (block.type === "text") _textLen += block.text.length;
+        else if (block.type === "thinking") _textLen += block.text.length;
+        else if (block.type === "tool_call") {
+          if (block.toolCall.isComplete) _toolComplete++;
+          // Track agent children changes too
+          if (block.toolCall.children) _toolComplete += block.toolCall.children.length;
+        }
       }
+      void _textLen;
+      void _toolComplete;
     }
     void isRunning;
 
@@ -145,7 +292,12 @@
 
       {#if isRunning}
         <div class="thinking-indicator">
-          <span class="think-pulse"></span>
+          <canvas
+            class="think-orbit-canvas"
+            width="56"
+            height="36"
+            bind:this={orbitCanvas}
+          ></canvas>
           <span class="think-text">
             {#if currentActivity?.kind === "thinking"}
               {currentActivity.text}
@@ -197,6 +349,7 @@
     transition: all 0.2s ease;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     margin: 0 auto;
+    animation: fadeIn 0.2s ease;
   }
   .scroll-bottom:hover {
     background: var(--bg-glass-hover);
@@ -238,7 +391,7 @@
     margin: 0 auto;
   }
 
-  /* ── Thinking indicator: pulse + live text + timer ── */
+  /* ── Thinking indicator: three-body orbit + live text + timer ── */
   .thinking-indicator {
     display: flex;
     align-items: center;
@@ -252,18 +405,10 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .think-pulse {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: rgba(167, 139, 250, 0.8);
+  .think-orbit-canvas {
+    width: 56px;
+    height: 36px;
     flex-shrink: 0;
-    animation: thinkPulse 2s ease-in-out infinite;
-  }
-
-  @keyframes thinkPulse {
-    0%, 100% { opacity: 0.4; box-shadow: 0 0 0 0 rgba(167, 139, 250, 0); }
-    50% { opacity: 1; box-shadow: 0 0 10px 3px rgba(167, 139, 250, 0.35); }
   }
 
   .think-text {

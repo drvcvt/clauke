@@ -180,19 +180,11 @@
   }
 
   .line.add {
-    background: rgba(63, 185, 80, 0.1);
+    background: var(--color-add-bg);
   }
 
   .line.remove {
-    background: rgba(248, 81, 73, 0.1);
-  }
-
-  :global([data-theme="light"]) .line.add {
-    background: rgba(63, 185, 80, 0.12);
-  }
-
-  :global([data-theme="light"]) .line.remove {
-    background: rgba(248, 81, 73, 0.12);
+    background: var(--color-remove-bg);
   }
 
   .gutter {
@@ -215,11 +207,11 @@
   }
 
   .line.add .marker {
-    color: rgba(63, 185, 80, 0.7);
+    color: var(--color-add);
   }
 
   .line.remove .marker {
-    color: rgba(248, 81, 73, 0.7);
+    color: var(--color-remove);
   }
 
   .line.context .marker {
@@ -233,20 +225,13 @@
   }
 
   .line.add .text {
-    color: rgba(63, 185, 80, 0.85);
+    color: var(--color-add);
   }
 
   .line.remove .text {
-    color: rgba(248, 81, 73, 0.75);
+    color: var(--color-remove);
     text-decoration: line-through;
-    text-decoration-color: rgba(248, 81, 73, 0.3);
-  }
-
-  :global([data-theme="light"]) .line.add .text {
-    color: rgba(22, 120, 40, 0.9);
-  }
-
-  :global([data-theme="light"]) .line.remove .text {
-    color: rgba(200, 50, 50, 0.8);
+    /* Fix: --color-remove-bg is rgba(255,100,100,0.06) — invisible as strikethrough color */
+    text-decoration-color: currentColor;
   }
 </style>

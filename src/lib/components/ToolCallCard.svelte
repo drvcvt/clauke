@@ -164,7 +164,7 @@
           <pre class="block">{JSON.stringify(toolCall.input, null, 2)}</pre>
         {/if}
         {#if toolCall.result}
-          {@const r = truncateResult(toolCall.result, 60)}
+          {@const r = truncateResult(toolCall.result, 200)}
           <pre class="block result">{r.text}{#if r.truncated}<span class="fade-out"></span>{/if}</pre>
         {:else if toolCall.isComplete}
           <div class="no-result">no output</div>
@@ -359,7 +359,7 @@
     padding: 8px 12px;
     background: rgba(0, 0, 0, 0.15);
     border-radius: 6px;
-    max-height: 360px;
+    max-height: 600px;
     overflow: auto;
     white-space: pre-wrap;
     word-break: break-all;

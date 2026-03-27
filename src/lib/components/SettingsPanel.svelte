@@ -2,8 +2,8 @@
   import { getCurrentWindow, Effect, EffectState } from "@tauri-apps/api/window";
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import type { ClaudeModel, EffortLevel, PermissionMode, McpServer, McpServerType, HookRule } from "../types";
-  import { MODEL_LABELS, EFFORT_LABELS, PERMISSION_LABELS, HOOK_EVENTS, HOOK_EVENT_LABELS } from "../types";
+  import type { ClaudeModel, EffortLevel, PermissionMode, McpServer, McpServerType, HookRule, ThemePreset } from "../types";
+  import { MODEL_LABELS, EFFORT_LABELS, PERMISSION_LABELS, HOOK_EVENTS, HOOK_EVENT_LABELS, THEME_PRESETS, applyThemePreset, clearThemeOverrides } from "../types";
   import type { HookEvent } from "../types";
 
   let {
@@ -25,6 +25,8 @@
   let theme = $state<"dark" | "light">(
     (localStorage.getItem("clauke:theme") as "dark" | "light") || "dark",
   );
+  let themePresetId = $state(localStorage.getItem("clauke:themePreset") || "midnight");
+  let activePreset = $derived(THEME_PRESETS.find(p => p.id === themePresetId) || THEME_PRESETS[0]);
   let transparency = $state(
     localStorage.getItem("clauke:transparency") !== "false",
   );
@@ -60,8 +62,9 @@
 
   const helpContent: Record<string, string> = {
     cli: "clauke needs the Claude Code CLI to work.\n\nInstall it via npm:\n  npm install -g @anthropic-ai/claude-code\n\nThen run 'claude' once in a terminal to authenticate.\n\nIf the status shows a red X, Claude CLI is not in your PATH. Either:\n  1. Restart clauke after installing\n  2. Set the full path below (e.g. C:\\Users\\you\\AppData\\Roaming\\npm\\claude.cmd)\n\nClick 'verify' to re-check after changes.",
-    mcp: "MCP (Model Context Protocol) servers extend Claude with custom tools.\n\nServer types:\n  stdio — runs a local command (e.g. npx, node, python)\n  http — connects to an HTTP MCP endpoint\n  sse — connects to a Server-Sent Events endpoint\n\nExamples:\n  stdio: name=filesystem, command=npx, args=-y @anthropic/mcp-filesystem\n  http: name=ida-pro, url=http://127.0.0.1:13337/mcp",
+    mcp: "MCP (Model Context Protocol) servers extend Claude with custom tools.\n\nServer types:\n  stdio — runs a local command (e.g. npx, node, python)\n  http — connects to an HTTP MCP endpoint\n  sse — connects to a Server-Sent Events endpoint\n\nDiscovery:\n  Add directories to scan for MCP server packages.\n  clauke scans for package.json/pyproject.toml with MCP keywords.\n  Found servers appear with toggles to enable/disable them.\n\nExamples:\n  stdio: name=filesystem, command=npx, args=-y @anthropic/mcp-filesystem\n  http: name=ida-pro, url=http://127.0.0.1:13337/mcp",
     hooks: "Hooks run shell commands at specific points in Claude's lifecycle.\n\nEvents:\n  PreToolUse — before a tool runs\n  PostToolUse — after a tool runs\n  SessionStart/End — session lifecycle\n  Stop — when Claude finishes\n\nMatcher is a regex to filter tool names (e.g. Edit|Write).",
+    mcpDetect: "Auto-detect scans your directories for MCP server packages.\n\nWhat it finds:\n  — npm packages with 'mcp' in name, description, or keywords\n  — Python packages using model-context-protocol\n  — Searches up to 3 levels deep, skips node_modules/dist/etc.\n\nHow to use:\n  1. Add directories that contain your MCP server projects\n  2. Click 'scan for servers'\n  3. Toggle discovered servers on/off — enabled servers are added to Claude's config\n\nTip: Add your main code directory (e.g. T:/code) to find all your MCP projects at once.",
   };
 
   function showHelp(target: EventTarget | null, key: string) {
@@ -200,10 +203,25 @@
     document.documentElement.setAttribute("data-theme", t);
   }
 
+  function selectThemePreset(presetId: string) {
+    const preset = THEME_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+    // Clear old preset overrides
+    const oldPreset = THEME_PRESETS.find(p => p.id === themePresetId);
+    if (oldPreset) clearThemeOverrides(oldPreset.vars);
+    // Apply new preset
+    themePresetId = presetId;
+    theme = preset.base;
+    save("themePreset", presetId);
+    save("theme", preset.base);
+    applyThemePreset(preset);
+  }
+
   function toggleTheme() {
-    theme = theme === "dark" ? "light" : "dark";
-    save("theme", theme);
-    applyTheme(theme);
+    // Cycle to next preset
+    const idx = THEME_PRESETS.findIndex(p => p.id === themePresetId);
+    const next = THEME_PRESETS[(idx + 1) % THEME_PRESETS.length];
+    selectThemePreset(next.id);
   }
 
   // ── Font size ──
@@ -377,6 +395,99 @@
     }
   }
 
+  // ── MCP Health Polling (only while settings panel is open) ──
+  let mcpPollInterval: ReturnType<typeof setInterval> | null = null;
+
+  function startMcpPolling() {
+    stopMcpPolling(); // always clear first to prevent stacking
+    mcpPollInterval = setInterval(() => {
+      if (mcpServers.length > 0 && isOpen) {
+        checkAllMcpHealth();
+      }
+    }, 15_000);
+  }
+
+  function stopMcpPolling() {
+    if (mcpPollInterval) {
+      clearInterval(mcpPollInterval);
+      mcpPollInterval = null;
+    }
+  }
+
+  // ── MCP Auto-Discovery ──
+  interface DiscoveredMcp {
+    name: string;
+    command: string;
+    args: string[];
+    source_path: string;
+    description: string;
+  }
+
+  let mcpScanDirs = $state<string[]>(
+    (() => { try { return JSON.parse(localStorage.getItem("clauke:mcpScanDirs") || "[]"); } catch { return []; } })()
+  );
+  let mcpDiscovered = $state<DiscoveredMcp[]>([]);
+  let mcpScanning = $state(false);
+  let mcpScanDone = $state(false);
+  let mcpNewScanDir = $state("");
+
+  // Which discovered MCPs are currently enabled (exist in Claude settings)
+  let mcpEnabledNames = $derived(new Set(mcpServers.map(s => s.name)));
+
+  function saveScanDirs() {
+    localStorage.setItem("clauke:mcpScanDirs", JSON.stringify(mcpScanDirs));
+  }
+
+  function addScanDir(dir: string) {
+    const d = dir.trim().replace(/\\/g, "/");
+    if (!d || mcpScanDirs.includes(d)) return;
+    mcpScanDirs = [...mcpScanDirs, d];
+    saveScanDirs();
+  }
+
+  function removeScanDir(dir: string) {
+    mcpScanDirs = mcpScanDirs.filter(d => d !== dir);
+    saveScanDirs();
+  }
+
+  async function browseScanDir() {
+    const selected = await open({ directory: true, multiple: false });
+    if (selected) {
+      addScanDir(selected as string);
+    }
+  }
+
+  async function scanForMcps() {
+    if (mcpScanDirs.length === 0) return;
+    mcpScanning = true;
+    mcpScanDone = false;
+    try {
+      mcpDiscovered = await invoke<DiscoveredMcp[]>("scan_mcp_directories", { dirs: mcpScanDirs });
+    } catch {
+      mcpDiscovered = [];
+    }
+    mcpScanning = false;
+    mcpScanDone = true;
+  }
+
+  async function enableDiscoveredMcp(mcp: DiscoveredMcp) {
+    try {
+      await invoke("add_mcp_server", {
+        name: mcp.name,
+        serverType: "stdio",
+        command: mcp.command,
+        args: mcp.args,
+        env: {},
+        url: null,
+      });
+      await loadMcpServers();
+    } catch { /* silently fail */ }
+  }
+
+  async function disableDiscoveredMcp(name: string) {
+    await removeMcpServer(name);
+  }
+
   // ── Hooks ──
   let hooksConfig = $state<Record<string, HookRule[]>>({});
   let hooksLoading = $state(false);
@@ -423,7 +534,13 @@
 
   // Apply saved settings on first render
   document.documentElement.style.setProperty("--chat-font-size", `${fontSize}px`);
-  applyTheme(theme);
+  // Apply theme preset (includes base theme + color overrides)
+  const savedPreset = THEME_PRESETS.find(p => p.id === themePresetId);
+  if (savedPreset) {
+    applyThemePreset(savedPreset);
+  } else {
+    applyTheme(theme);
+  }
   applyTransparency(transparency);
   // Emit initial settings
   emitAll();
@@ -431,12 +548,25 @@
   // Load MCP servers, hooks, editors, and CLI status when panel opens
   $effect(() => {
     if (isOpen) {
-      loadMcpServers().then(() => checkAllMcpHealth());
+      loadMcpServers().then(() => {
+        checkAllMcpHealth();
+        startMcpPolling();
+        // Auto-scan if directories are configured and we haven't scanned yet
+        if (mcpScanDirs.length > 0 && !mcpScanDone && !mcpScanning) {
+          scanForMcps();
+        }
+      });
       loadHooks();
       loadEditors();
       checkCli();
       loadDiscordRpcState();
+    } else {
+      // Stop polling immediately when panel closes
+      stopMcpPolling();
     }
+    return () => {
+      stopMcpPolling();
+    };
   });
 </script>
 
@@ -528,9 +658,26 @@
           <div class="row">
             <div class="label-group">
               <span class="label">theme</span>
-              <span class="desc">{theme === "dark" ? "midnight cloak" : "daylight"}</span>
+              <span class="desc">{activePreset.name}</span>
             </div>
-            <button class="pill" onclick={toggleTheme}>{theme}</button>
+            <button class="pill" onclick={toggleTheme}>{activePreset.base}</button>
+          </div>
+
+          <div class="theme-grid">
+            {#each THEME_PRESETS as preset}
+              <button
+                class="theme-swatch"
+                class:active={preset.id === themePresetId}
+                onclick={() => selectThemePreset(preset.id)}
+                title={preset.name}
+                style:--swatch-bg={preset.vars["--bg-base"]}
+                style:--swatch-accent={preset.vars["--accent-purple"]}
+                style:--swatch-text={preset.base === "dark" ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.6)"}
+              >
+                <span class="swatch-dot"></span>
+                <span class="swatch-label">{preset.name}</span>
+              </button>
+            {/each}
           </div>
 
           <div class="row">
@@ -687,10 +834,11 @@
             {/if}
           </div>
 
+          <!-- Active servers -->
           {#if mcpLoading}
             <div class="mcp-empty">loading…</div>
           {:else if mcpServers.length === 0 && !mcpAddOpen}
-            <div class="mcp-empty">no servers configured</div>
+            <div class="mcp-empty">no servers active</div>
           {:else}
             {#each mcpServers as server}
               <div class="mcp-row">
@@ -725,6 +873,7 @@
             {/each}
           {/if}
 
+          <!-- Manual add -->
           {#if mcpAddOpen}
             <div class="mcp-add-form">
               <input class="mcp-input" placeholder="name" bind:value={mcpNewName} />
@@ -746,7 +895,101 @@
             </div>
           {:else}
             <div class="row" style="justify-content: flex-end; padding-top: 4px;">
-              <button class="pill" onclick={() => (mcpAddOpen = true)}>+ add server</button>
+              <button class="pill" onclick={() => (mcpAddOpen = true)}>+ add manual</button>
+            </div>
+          {/if}
+        </div>
+
+        <!-- ── MCP Auto-Detect ── -->
+        <div class="section">
+          <div class="section-title">
+            auto-detect mcps
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span class="help-trigger" onmouseenter={(e) => showHelp(e.currentTarget, 'mcpDetect')} onmouseleave={hideHelp}>?</span>
+          </div>
+
+          <div class="mcp-detect-desc">
+            scan directories for MCP server packages — discovered servers can be enabled with one click
+          </div>
+
+          <!-- Quick scan bar -->
+          <div class="mcp-detect-bar">
+            <button
+              class="pill mcp-detect-scan-btn"
+              onclick={scanForMcps}
+              disabled={mcpScanning || mcpScanDirs.length === 0}
+            >
+              {#if mcpScanning}
+                <span class="mcp-detect-spinner"></span> scanning...
+              {:else}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                scan for servers
+              {/if}
+            </button>
+            {#if mcpScanDone && !mcpScanning}
+              <span class="mcp-detect-result">
+                {mcpDiscovered.length} server{mcpDiscovered.length !== 1 ? "s" : ""} found
+              </span>
+            {/if}
+          </div>
+
+          <!-- Scan directories -->
+          <div class="mcp-scan-dirs">
+            <div class="mcp-scan-dirs-label">scan directories</div>
+            {#each mcpScanDirs as dir}
+              <div class="mcp-scan-dir-row">
+                <span class="mcp-scan-dir-path" title={dir}>{dir}</span>
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span class="mcp-scan-dir-remove" onclick={() => removeScanDir(dir)} title="Remove directory">
+                  <svg width="8" height="8" viewBox="0 0 10 10">
+                    <line x1="2" y1="2" x2="8" y2="8" stroke="currentColor" stroke-width="1.2" />
+                    <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" stroke-width="1.2" />
+                  </svg>
+                </span>
+              </div>
+            {/each}
+
+            <div class="mcp-scan-dir-add">
+              <input
+                class="mcp-input"
+                placeholder="add directory to scan..."
+                bind:value={mcpNewScanDir}
+                onkeydown={(e) => { if (e.key === 'Enter') { addScanDir(mcpNewScanDir); mcpNewScanDir = ''; } }}
+              />
+              <button class="pill" onclick={browseScanDir} title="Browse for folder">browse</button>
+            </div>
+          </div>
+
+          <!-- Discovered MCPs -->
+          {#if mcpDiscovered.length > 0}
+            <div class="mcp-discovered-list">
+              <div class="mcp-discovered-label">discovered servers — toggle to enable</div>
+              {#each mcpDiscovered as mcp}
+                <div class="mcp-discovered-row" class:enabled={mcpEnabledNames.has(mcp.name)}>
+                  <div class="mcp-discovered-info">
+                    <div class="mcp-discovered-header">
+                      <span class="mcp-name">{mcp.name}</span>
+                      {#if mcpEnabledNames.has(mcp.name)}
+                        <span class="mcp-discovered-badge">active</span>
+                      {/if}
+                    </div>
+                    {#if mcp.description}
+                      <span class="mcp-discovered-desc">{mcp.description}</span>
+                    {/if}
+                    <span class="mcp-cmd">{mcp.command} {mcp.args.join(" ")}</span>
+                  </div>
+                  <button
+                    class="toggle"
+                    class:active={mcpEnabledNames.has(mcp.name)}
+                    title={mcpEnabledNames.has(mcp.name) ? "Disable" : "Enable"}
+                    onclick={() => mcpEnabledNames.has(mcp.name) ? disableDiscoveredMcp(mcp.name) : enableDiscoveredMcp(mcp)}
+                  >
+                    <span class="toggle-knob"></span>
+                  </button>
+                </div>
+              {/each}
             </div>
           {/if}
         </div>
@@ -893,14 +1136,8 @@
   }
 
   .panel {
-    --panel-bg: rgba(255, 255, 255, 0.06);
-    --panel-header-bg: rgba(255, 255, 255, 0.08);
     --panel-border: rgba(255, 255, 255, 0.1);
     --panel-divider: rgba(255, 255, 255, 0.06);
-    --panel-hover: rgba(255, 255, 255, 0.06);
-    --panel-control-bg: rgba(255, 255, 255, 0.04);
-    --panel-control-active: rgba(255, 255, 255, 0.12);
-    --panel-control-active-border: rgba(255, 255, 255, 0.18);
     --panel-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
     --panel-inset: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 
@@ -917,25 +1154,9 @@
     transform-origin: top right;
   }
 
-  :global(html.transparent) .panel {
-    --panel-bg: rgba(255, 255, 255, 0.05);
-    --panel-header-bg: rgba(255, 255, 255, 0.06);
-  }
-
-  :global([data-theme="light"].transparent) .panel {
-    --panel-bg: rgba(0, 0, 0, 0.05);
-    --panel-header-bg: rgba(0, 0, 0, 0.06);
-  }
-
   :global([data-theme="light"]) .panel {
-    --panel-bg: rgba(255, 255, 255, 0.45);
-    --panel-header-bg: rgba(255, 255, 255, 0.5);
     --panel-border: rgba(0, 0, 0, 0.1);
     --panel-divider: rgba(0, 0, 0, 0.06);
-    --panel-hover: rgba(0, 0, 0, 0.04);
-    --panel-control-bg: rgba(0, 0, 0, 0.04);
-    --panel-control-active: rgba(0, 0, 0, 0.1);
-    --panel-control-active-border: rgba(0, 0, 0, 0.18);
     --panel-shadow: 0 8px 40px rgba(0, 0, 0, 0.1);
     --panel-inset: inset 0 1px 0 rgba(255, 255, 255, 0.5);
   }
@@ -1065,6 +1286,57 @@
     text-overflow: ellipsis;
   }
 
+  /* ── Theme preset grid ── */
+  .theme-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    padding: 2px 0 8px;
+  }
+
+  .theme-swatch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    background: var(--swatch-bg, var(--panel-control-bg));
+    cursor: pointer;
+    transition: all 0.15s ease;
+    min-width: 0;
+  }
+
+  .theme-swatch:hover {
+    border-color: var(--border-focus);
+  }
+
+  .theme-swatch.active {
+    border-color: var(--swatch-accent, var(--accent-purple));
+    box-shadow: 0 0 0 1px var(--swatch-accent, var(--accent-purple));
+  }
+
+  .swatch-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--swatch-accent, var(--accent-purple));
+    flex-shrink: 0;
+  }
+
+  .swatch-label {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--swatch-text, var(--text-secondary));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .theme-swatch.active .swatch-label {
+    color: var(--swatch-text, var(--text));
+  }
+
   .toggle {
     width: 36px;
     height: 20px;
@@ -1080,7 +1352,7 @@
 
   .toggle.active {
     background: var(--panel-control-active);
-    border-color: var(--panel-control-active-border);
+    border-color: var(--panel-control-border);
   }
 
   .toggle-knob {
@@ -1221,8 +1493,8 @@
 
   .mcp-remove:hover {
     opacity: 1 !important;
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.1);
+    color: var(--color-error);
+    background: var(--color-error-soft);
   }
 
   .mcp-add-form {
@@ -1272,15 +1544,15 @@
   }
 
   .mcp-status-dot.healthy {
-    background: rgba(100, 220, 140, 0.9);
+    background: var(--color-success);
     opacity: 1;
-    box-shadow: 0 0 4px rgba(100, 220, 140, 0.3);
+    box-shadow: 0 0 4px var(--color-success-soft);
   }
 
   .mcp-status-dot.unhealthy {
-    background: rgba(255, 100, 100, 0.9);
+    background: var(--color-error);
     opacity: 1;
-    box-shadow: 0 0 4px rgba(255, 100, 100, 0.3);
+    box-shadow: 0 0 4px var(--color-error-soft);
   }
 
   .mcp-status-dot.checking {
@@ -1313,7 +1585,7 @@
   .mcp-refresh:hover {
     opacity: 1;
     color: var(--text-secondary);
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--panel-control-bg);
   }
 
   .hook-row {
@@ -1343,7 +1615,7 @@
     font-weight: 500;
     color: var(--text-secondary);
     padding: 1px 5px;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--panel-control-bg);
     border-radius: 3px;
   }
 
@@ -1364,34 +1636,44 @@
     white-space: nowrap;
   }
 
-  .hook-select {
+  .hook-select,
+  select.mcp-input {
     width: 100%;
     padding: 5px 8px;
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--text-secondary);
+    color: var(--text);
     background: var(--bg-input);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     outline: none;
     cursor: pointer;
     transition: border-color 0.2s ease;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238888aa' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 24px;
   }
 
-  .hook-select option {
+  .hook-select option,
+  select.mcp-input option {
     background: #1a1a2e;
-    color: var(--text-secondary);
+    color: #d0d0d8;
     padding: 4px 8px;
   }
 
-  .hook-select:focus {
-    border-color: var(--border-focus);
-    color: var(--text);
+  :global([data-theme="light"]) .hook-select option,
+  :global([data-theme="light"]) select.mcp-input option {
+    background: #ffffff;
+    color: #2a2a3a;
   }
 
-  :global([data-theme="light"]) .hook-select option {
-    background: #f8f8fa;
-    color: #333;
+  .hook-select:focus,
+  select.mcp-input:focus {
+    border-color: var(--border-focus);
+    color: var(--text);
   }
 
   .sys-prompt {
@@ -1424,7 +1706,7 @@
     font-weight: 600;
     font-style: normal;
     color: var(--text-tertiary);
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--panel-control-bg);
     border: 1px solid var(--border-subtle);
     cursor: help;
     margin-left: 6px;
@@ -1435,7 +1717,7 @@
 
   .help-trigger:hover {
     color: var(--text-secondary);
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--panel-hover);
     border-color: var(--border);
   }
 
@@ -1443,13 +1725,13 @@
     position: fixed;
     z-index: 200;
     max-width: min(560px, calc(100vw - 32px));
-    padding: 10px 14px;
-    background: rgba(20, 20, 35, 0.96);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 12px 16px;
+    background: var(--panel-tooltip-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--border-subtle);
     animation: helpIn 0.15s var(--ease-out-expo);
     pointer-events: none;
   }
@@ -1462,27 +1744,13 @@
   .help-text {
     font-family: var(--font-mono);
     font-size: 10.5px;
-    line-height: 1.5;
-    color: var(--text-secondary);
+    line-height: 1.6;
+    color: var(--text);
     margin: 0;
     white-space: pre-wrap;
     word-wrap: break-word;
-    max-height: 240px;
+    max-height: 280px;
     overflow-y: auto;
-  }
-
-  :global([data-theme="light"]) .help-tooltip {
-    background: rgba(250, 250, 252, 0.96);
-    border-color: rgba(0, 0, 0, 0.1);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-  }
-
-  :global([data-theme="light"]) .help-trigger {
-    background: rgba(0, 0, 0, 0.04);
-  }
-
-  :global([data-theme="light"]) .help-trigger:hover {
-    background: rgba(0, 0, 0, 0.08);
   }
 
   .cli-status {
@@ -1492,12 +1760,12 @@
   }
 
   .cli-ok {
-    color: rgba(100, 220, 140, 0.9);
+    color: var(--color-success);
     display: flex;
   }
 
   .cli-err {
-    color: rgba(255, 100, 100, 0.9);
+    color: var(--color-error);
     display: flex;
   }
 
@@ -1526,5 +1794,205 @@
 
   .sys-prompt::placeholder {
     color: var(--text-tertiary);
+  }
+
+  /* ── MCP Auto-Detect ── */
+  .mcp-detect-desc {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+    padding: 0 0 6px;
+  }
+
+  .mcp-detect-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0 8px;
+  }
+
+  .mcp-detect-scan-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    background: var(--accent-purple-soft);
+    border-color: var(--accent-purple);
+    color: var(--accent-purple);
+    font-weight: 500;
+  }
+
+  .mcp-detect-scan-btn:hover:not(:disabled) {
+    background: var(--accent-purple);
+    color: var(--bg-base);
+  }
+
+  .mcp-detect-scan-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .mcp-detect-spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--accent-purple);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .mcp-detect-result {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--color-success);
+  }
+
+  .mcp-scan-dirs {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+  }
+
+  .mcp-scan-dirs-label {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-bottom: 2px;
+  }
+
+  .mcp-scan-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    background: var(--panel-control-bg);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .mcp-scan-dir-path {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+
+  .mcp-scan-dir-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border-radius: 3px;
+    opacity: 0;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .mcp-scan-dir-row:hover .mcp-scan-dir-remove {
+    opacity: 0.5;
+  }
+
+  .mcp-scan-dir-remove:hover {
+    opacity: 1 !important;
+    color: var(--color-error);
+    background: var(--color-error-soft);
+  }
+
+  .mcp-scan-dir-add {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding-top: 2px;
+  }
+
+  .mcp-scan-dir-add .mcp-input {
+    flex: 1;
+  }
+
+  .mcp-discovered-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-top: 8px;
+  }
+
+  .mcp-discovered-label {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-bottom: 3px;
+  }
+
+  .mcp-discovered-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    background: var(--panel-control-bg);
+    transition: all 0.15s ease;
+  }
+
+  .mcp-discovered-row:hover {
+    border-color: var(--border);
+  }
+
+  .mcp-discovered-row.enabled {
+    border-color: var(--color-success);
+    background: var(--color-success-soft);
+  }
+
+  .mcp-discovered-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .mcp-discovered-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .mcp-discovered-badge {
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    color: var(--color-success);
+    background: var(--color-success-soft);
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .mcp-discovered-desc {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
