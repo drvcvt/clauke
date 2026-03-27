@@ -1,22 +1,57 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <!-- Cloak / outer wrap -->
-  <path d="M96 24C96 24 104 36 104 64C104 92 88 108 64 108C40 108 24 92 24 64C24 36 32 24 32 24" stroke="url(#cloak)" stroke-width="6" stroke-linecap="round" fill="none"/>
-  <!-- Inner cloak layer -->
-  <path d="M84 34C84 34 90 44 90 64C90 84 78 96 64 96C50 96 38 84 38 64C38 44 44 34 44 34" stroke="url(#inner)" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/>
-  <!-- Terminal cursor / prompt -->
-  <text x="52" y="74" font-family="monospace" font-weight="700" font-size="32" fill="url(#cursor)">_</text>
   <defs>
-    <linearGradient id="cloak" x1="24" y1="24" x2="104" y2="108">
-      <stop offset="0%" stop-color="#c4b5fd"/>
-      <stop offset="100%" stop-color="#7c3aed"/>
+    <!-- Main cloak gradient — white to slate grey -->
+    <linearGradient id="cloak" x1="20" y1="16" x2="108" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f1f5f9"/>
+      <stop offset="50%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#334155"/>
     </linearGradient>
-    <linearGradient id="inner" x1="38" y1="34" x2="90" y2="96">
-      <stop offset="0%" stop-color="#a78bfa"/>
-      <stop offset="100%" stop-color="#6d28d9"/>
+    <!-- Inner glow gradient -->
+    <linearGradient id="glow" x1="40" y1="40" x2="88" y2="88" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#e2e8f0" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#64748b" stop-opacity="0.05"/>
     </linearGradient>
-    <linearGradient id="cursor" x1="52" y1="50" x2="70" y2="74">
-      <stop offset="0%" stop-color="#e9e5ff"/>
-      <stop offset="100%" stop-color="#c4b5fd"/>
+    <!-- Terminal text gradient -->
+    <linearGradient id="terminal" x1="42" y1="52" x2="86" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e2e8f0"/>
     </linearGradient>
+    <!-- Subtle shadow filter -->
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#1e293b" flood-opacity="0.35"/>
+    </filter>
   </defs>
+
+  <!-- Cloak body — flowing hood/cape shape -->
+  <path d="
+    M64 8
+    C44 8, 22 22, 20 48
+    C18 68, 22 90, 34 104
+    L46 116
+    C50 108, 54 96, 56 84
+    L56 84
+    C58 96, 60 108, 64 118
+    C68 108, 70 96, 72 84
+    L72 84
+    C74 96, 78 108, 82 116
+    L94 104
+    C106 90, 110 68, 108 48
+    C106 22, 84 8, 64 8Z
+  " fill="url(#cloak)" filter="url(#shadow)"/>
+
+  <!-- Inner cloak fold — left drape line -->
+  <path d="M48 36 C44 52, 44 72, 46 92" stroke="#cbd5e1" stroke-width="1.5" stroke-linecap="round" opacity="0.4" fill="none"/>
+  <!-- Inner cloak fold — right drape line -->
+  <path d="M80 36 C84 52, 84 72, 82 92" stroke="#cbd5e1" stroke-width="1.5" stroke-linecap="round" opacity="0.4" fill="none"/>
+
+  <!-- Inner glow ellipse -->
+  <ellipse cx="64" cy="62" rx="22" ry="24" fill="url(#glow)"/>
+
+  <!-- Terminal prompt >_ -->
+  <g fill="url(#terminal)">
+    <!-- > chevron -->
+    <path d="M46 56 L56 64 L46 72" stroke="url(#terminal)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <!-- _ cursor -->
+    <rect x="62" y="70" width="16" height="3.5" rx="1.5" fill="url(#terminal)"/>
+  </g>
 </svg>
