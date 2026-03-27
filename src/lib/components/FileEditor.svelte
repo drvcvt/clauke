@@ -13,6 +13,14 @@
   import { css } from "@codemirror/lang-css";
   import { json } from "@codemirror/lang-json";
   import { markdown } from "@codemirror/lang-markdown";
+  import { cpp } from "@codemirror/lang-cpp";
+  import { java } from "@codemirror/lang-java";
+  import { sql } from "@codemirror/lang-sql";
+  import { xml } from "@codemirror/lang-xml";
+  import { yaml } from "@codemirror/lang-yaml";
+  import { go } from "@codemirror/lang-go";
+  import { php } from "@codemirror/lang-php";
+  import { sass } from "@codemirror/lang-sass";
 
   let {
     filePath = "",
@@ -61,11 +69,21 @@
       case "js": case "jsx": case "mjs": case "cjs": return javascript({ jsx: ext.endsWith("x") });
       case "svelte": case "vue": return html();
       case "rs": return rust();
-      case "py": return python();
-      case "html": case "xml": return html();
-      case "css": case "scss": return css();
-      case "json": case "jsonc": return json();
+      case "py": case "pyw": case "pyi": return python();
+      case "html": case "htm": return html();
+      case "xml": case "svg": case "xaml": return xml();
+      case "css": return css();
+      case "scss": case "sass": return sass();
+      case "json": case "jsonc": case "json5": return json();
       case "md": case "mdx": return markdown();
+      case "c": case "cpp": case "cc": case "cxx": case "h": case "hpp": case "hxx": return cpp();
+      case "java": case "kt": case "kts": return java();
+      case "go": return go();
+      case "sql": return sql();
+      case "yaml": case "yml": return yaml();
+      case "toml": case "ini": case "conf": case "cfg": return yaml(); // closest match
+      case "php": return php();
+      case "sh": case "bash": case "zsh": case "fish": case "bat": case "cmd": case "ps1": return yaml(); // basic highlighting
       default: return [];
     }
   }
@@ -147,7 +165,8 @@
         indentOnInput(),
         bracketMatching(),
         keymap.of([...defaultKeymap, indentWithTab]),
-        isDark ? oneDark : syntaxHighlighting(defaultHighlightStyle),
+        syntaxHighlighting(defaultHighlightStyle),
+        isDark ? oneDark : [],
         isDark ? claukeTheme : [],
         ...(Array.isArray(lang) ? lang : [lang]),
         EditorView.updateListener.of((update) => {

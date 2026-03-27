@@ -54,9 +54,27 @@ Kein integrierter File-Renderer — nur Tree-Ansicht.
 **Status:** Fertig
 
 ### 12. Search in Chat
-Suche durch bisherige Messages in der aktuellen Conversation.
-**Status:** Offen
+Suche durch bisherige Messages in der aktuellen Conversation (Ctrl+F).
+**Status:** Fertig
 
 ### 13. Keyboard Shortcut Cheatsheet
-Overlay/Modal mit allen verfügbaren Shortcuts.
-**Status:** Offen
+Overlay/Modal mit allen verfügbaren Shortcuts (Ctrl+/).
+**Status:** Fertig
+
+### 14. Code Change Tracker
+Sidebar die alle File-Aenderungen pro Session gruppiert anzeigt mit expandierbaren Diffs (Ctrl+J).
+**Status:** Fertig
+
+### 15. Built-in File Editor
+CodeMirror 6 basierter Editor mit Syntax Highlighting fuer 15+ Sprachen.
+Oeffnet sich per Click im File Explorer oder Change Tracker. Save mit Ctrl+S.
+**Status:** Fertig
+
+### 16. External Editor Integration
+Preferred Editor konfigurierbar in Settings (VS Code, Cursor, Sublime Text, Antigravity, Neovim).
+Middle-click im File Explorer oeffnet externen Editor. Windows cmd /c Workaround fuer .cmd Wrapper.
+**Status:** Fertig
+
+### 17. Token Bar Always Visible
+Token-Statistiken (in/out/cache/total/cost) und Context Indicator immer sichtbar, nicht nur bei aktiver Usage.
+**Status:** Fertig

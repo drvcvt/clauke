@@ -21,6 +21,10 @@ The official Claude Code CLI is powerful but terminal-only. clauke adds:
 - Model/effort selection per tab (opus, sonnet, haiku / max, high, low)
 - Steering — send follow-up instructions while Claude is still running
 - Agent panel — sidebar showing active sub-agent tool calls
+- Built-in file editor — CodeMirror 6 with syntax highlighting for 15+ languages
+- Change tracker — sidebar showing all code changes per session, grouped by file
+- In-chat search — find messages across the conversation (Ctrl+F)
+- External editor integration — VS Code, Cursor, Sublime Text, Antigravity, Neovim
 
 ## Architecture
 
@@ -93,9 +97,13 @@ The official Claude Code CLI is powerful but terminal-only. clauke adds:
 | `src/lib/components/SessionManager.svelte`| Archived session browser with search   |
 | `src/lib/components/TodoPanel.svelte`     | Task tracking (TodoWrite integration)  |
 | `src/lib/components/FileTree.svelte`      | File tree sidebar with diff stats      |
+| `src/lib/components/FileEditor.svelte`    | Built-in editor (CodeMirror 6, syntax highlighting) |
+| `src/lib/components/ChangeTracker.svelte` | Code change tracker sidebar (per-session diffs) |
 | `src/lib/components/DiffView.svelte`      | Unified diff renderer (LCS algorithm)  |
 | `src/lib/components/ContextIndicator.svelte` | Context window fill indicator       |
-| `src-tauri/src/lib.rs`             | Tauri commands (send_prompt, stop, steer, settings) |
+| `src/lib/components/SearchOverlay.svelte` | In-chat message search (Ctrl+F)        |
+| `src/lib/components/ShortcutHelp.svelte`  | Keyboard shortcut cheatsheet (Ctrl+/)  |
+| `src-tauri/src/lib.rs`             | Tauri commands (send_prompt, stop, steer, settings, file I/O) |
 | `src-tauri/src/claude.rs`          | Claude CLI process spawn + streaming       |
 | `src-tauri/src/main.rs`            | Entry point                                |
 
@@ -106,6 +114,9 @@ The official Claude Code CLI is powerful but terminal-only. clauke adds:
 - `@tauri-apps/plugin-dialog` ^2.6 — native dialogs
 - `highlight.js` ^11 — syntax highlighting in messages
 - `marked` ^17 — markdown rendering
+- `codemirror` ^6 — built-in file editor core
+- `@codemirror/lang-*` — language support (JS/TS, Rust, Python, Go, C/C++, Java, HTML, CSS, JSON, YAML, SQL, XML, PHP, Sass, Markdown)
+- `@codemirror/theme-one-dark` ^6 — dark editor theme
 - `svelte` ^5, `vite` ^6, `typescript` ^5 (dev)
 
 ### Backend (Cargo)

@@ -28,12 +28,15 @@
 - **Streaming markdown** — syntax-highlighted code blocks, tables, diffs
 - **Tool call cards** — collapsible display for every tool invocation with inline diffs
 - **Sub-agent tracking** — live sidebar showing nested agent activity
-- **File explorer** — browse project files, click to open in your editor, diff stats overlay
+- **File explorer** — browse project files, click to open in built-in editor, diff stats overlay
+- **Built-in file editor** — CodeMirror 6 with syntax highlighting for 15+ languages (JS/TS, Rust, Python, Go, C/C++, Java, HTML, CSS, YAML, SQL, and more)
+- **Change tracker** — sidebar showing all code changes per session, grouped by file with expandable diffs
+- **In-chat search** — find messages across the conversation (Ctrl+F)
 - **Task panel** — TodoWrite tasks rendered as a checklist
-- **Context indicator** — visual fill bar showing context window usage
+- **Context indicator** — visual fill bar showing context window usage, always visible token stats
 - **Session history** — archive and restore past conversations
-- **Settings** — theme, MCP servers, hooks, permission modes, editor preference, CLI path verification
-- **Keyboard shortcuts** — Ctrl+T/W/L/B/1-9, Ctrl+/ for cheatsheet
+- **Settings** — theme, MCP servers, hooks, permission modes, editor preference (VS Code, Cursor, Sublime Text, Antigravity, Neovim)
+- **Keyboard shortcuts** — Ctrl+T/W/L/B/F/J/1-9, Ctrl+/ for cheatsheet
 - **Custom titlebar** — frameless window, draggable, native window controls
 - **Tiny footprint** — uses system WebView2, no bundled Chromium (~3 MB installer)
 
@@ -80,6 +83,7 @@ Release artifacts are written to `src-tauri/target/release/bundle/`.
 | Backend | Rust — CLI process management, IPC |
 | Frontend | [Svelte 5](https://svelte.dev/) — reactive UI with runes |
 | Rendering | [marked](https://marked.js.org/) + [highlight.js](https://highlightjs.org/) |
+| Editor | [CodeMirror 6](https://codemirror.net/) — built-in file editor with syntax highlighting |
 
 ## How it works
 

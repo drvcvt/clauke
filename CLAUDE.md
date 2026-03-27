@@ -34,13 +34,17 @@ src/                    # Svelte frontend
       SessionManager.svelte # Archived session browser with search
       TodoPanel.svelte      # Task tracking panel (TodoWrite integration)
       FileTree.svelte       # File tree sidebar with diff stats
+      FileEditor.svelte     # Built-in file editor (CodeMirror 6, syntax highlighting)
+      ChangeTracker.svelte  # Code change tracker sidebar (per-session file diffs)
       AgentPanel.svelte     # Sub-agent sidebar with live activity tracking
       DiffView.svelte       # Unified diff renderer (LCS algorithm)
       ContextIndicator.svelte # Context window fill indicator
+      SearchOverlay.svelte  # In-chat message search (Ctrl+F)
+      ShortcutHelp.svelte   # Keyboard shortcut cheatsheet modal (Ctrl+/)
 src-tauri/              # Rust backend
   src/
     main.rs             # Entry point
-    lib.rs              # Tauri commands (send_prompt, stop, steer, settings)
+    lib.rs              # Tauri commands (send_prompt, stop, steer, settings, file I/O)
     claude.rs           # Claude CLI process management
 ```
 
