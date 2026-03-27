@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/clauke-logo.svg" width="96" alt="clauke logo" />
+  <img src="assets/clauke_preview_transparent.png" width="800" alt="clauke" />
 </p>
 
 <h1 align="center">clauke</h1>
@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-7c3aed" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.3.0-7c3aed" alt="version" />
   <img src="https://img.shields.io/badge/platform-Windows-0078d4" alt="platform" />
   <img src="https://img.shields.io/badge/tauri-v2-24c8db" alt="tauri" />
 </p>
@@ -19,7 +19,7 @@
 **clauke** is a lightweight desktop wrapper around the `claude` CLI. It doesn't reimplement any Claude functionality — it simply spawns `claude --output-format stream-json` and renders the streaming events in a polished UI.
 
 <p align="center">
-  <img src="assets/clauke_preview.png" width="720" alt="clauke preview" />
+  <img src="assets/clauke_preview_dark.png" width="720" alt="clauke interface" style="border-radius: 12px;" />
 </p>
 
 ## Features
