@@ -1,4 +1,4 @@
-/** Types for Claude stream-json events and UI state */
+/** Types for Claude stream-json events and UI state (clauke v0.3) */
 
 export type ToolName =
   | "Read"
@@ -25,14 +25,79 @@ export interface ToolCall {
   inferredComplete?: boolean;
   /** For Agent tool calls: nested tool calls made by the sub-agent */
   children?: ToolCall[];
+  /** Elapsed seconds from tool_progress events (real-time execution timer) */
+  elapsedSeconds?: number;
 }
 
-/** A content block — text, image, thinking, or a tool call, rendered in order */
+// new event types from claude code stream-json
+
+/** Background task tracked via task_started/progress/notification events */
+export interface BackgroundTask {
+  id: string;
+  description: string;
+  status: "running" | "completed" | "failed" | "stopped";
+  toolUseId?: string;
+  usage?: { totalTokens: number; toolUses: number; durationMs: number };
+  summary?: string;
+  lastToolName?: string;
+  outputFile?: string;
+}
+
+/** Hook execution tracked via hook_started/progress/response events */
+export interface HookExecution {
+  id: string;
+  name: string;
+  event: string;
+  status: "running" | "success" | "error" | "cancelled";
+  output: string;
+  exitCode?: number;
+}
+
+/** Rate limit info from rate_limit_event */
+export interface RateLimitInfo {
+  status: "allowed" | "allowed_warning" | "rejected";
+  utilization: number;
+  resetsAt: number;
+  rateLimitType: string;
+}
+
+/** API retry info from system.api_retry */
+export interface ApiRetryInfo {
+  attempt: number;
+  maxRetries: number;
+  retryDelayMs: number;
+  errorStatus?: number;
+  error?: string;
+}
+
+/** Session state from session_state_changed */
+export type SessionState = "idle" | "running" | "requires_action";
+
+/** Compact boundary metadata */
+export interface CompactBoundary {
+  trigger: "manual" | "auto";
+  preTokens: number;
+}
+
+/** Aggregated error info for display in chat */
+export interface ErrorInfo {
+  source: 'tool_result' | 'agent_failure' | 'permission_denied' | 'hook_error' | 'api_error' | 'rate_limit';
+  message: string;
+  toolName?: string;
+  toolUseId?: string;
+  agentId?: string;
+  timestamp: number;
+}
+
+/** A content block — text, image, thinking, tool call, system divider, or unknown event */
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | { type: "image"; path: string }
-  | { type: "tool_call"; toolCall: ToolCall };
+  | { type: "tool_call"; toolCall: ToolCall }
+  | { type: "hook_result"; hookName: string; hookEvent: string; message: string; isBlock: boolean; isError: boolean }
+  | { type: "divider"; text: string }
+  | { type: "unknown_event"; eventType: string; preview: string };
 
 export interface ChatMessage {
   id: string;
@@ -41,21 +106,54 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export interface ClaudeEvent {
+export type AgentKind = "claude" | "codex" | "kimi";
+
+export const DEFAULT_AGENT_KIND: AgentKind = "claude";
+
+export interface AgentEvent {
   type: string;
   tab_id?: string;
+  agent_kind?: AgentKind;
   [key: string]: unknown;
 }
 
+export type ClaudeEvent = AgentEvent;
+
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
+export type CodexModel =
+  | "gpt-5.4" | "gpt-5.4-mini"
+  | "gpt-5.3-codex" | "gpt-5.3-codex-spark"
+  | "gpt-5.2-codex" | "gpt-5.2"
+  | "gpt-5.1-codex-max" | "gpt-5.1-codex-mini";
+export type KimiThinkingMode = "default" | "thinking" | "no-thinking";
+export type AgentModel = ClaudeModel | CodexModel | string;
 export type EffortLevel = "low" | "medium" | "high" | "max";
-export type PermissionMode = "bypass" | "acceptEdits" | "plan" | "default";
+export type CodexEffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type AgentEffort = EffortLevel | CodexEffortLevel | KimiThinkingMode;
+export type PermissionMode = "bypass" | "acceptEdits" | "plan" | "default" | "auto" | "dontAsk";
+export type CodexApprovalMode = "never" | "on-failure" | "on-request" | "untrusted";
+export type KimiPermissionMode = "default" | "plan" | "never";
 
 export const PERMISSION_LABELS: Record<PermissionMode, string> = {
   bypass: "Bypass",
   acceptEdits: "Accept Edits",
   plan: "Plan",
   default: "Ask",
+  auto: "Auto",
+  dontAsk: "Don't Ask",
+};
+
+export const CODEX_APPROVAL_LABELS: Record<CodexApprovalMode, string> = {
+  never: "Full Auto",
+  "on-failure": "On Failure",
+  "on-request": "On Request",
+  untrusted: "Ask All",
+};
+
+export const KIMI_PERMISSION_LABELS: Record<KimiPermissionMode, string> = {
+  default: "Ask",
+  plan: "Plan",
+  never: "Full Auto",
 };
 
 /** Tools allowed per permission mode (bypass allows everything via CLI flag) */
@@ -79,18 +177,137 @@ export const MODEL_LABELS: Record<ClaudeModel, string> = {
   haiku: "Haiku",
 };
 
-/** Context window limits per model (in tokens) */
-export const MODEL_CONTEXT_LIMITS: Record<ClaudeModel, number> = {
-  opus: 1_000_000,
-  sonnet: 200_000,
-  haiku: 200_000,
+export const CODEX_MODEL_LABELS: Record<CodexModel, string> = {
+  "gpt-5.4": "GPT-5.4",
+  "gpt-5.4-mini": "GPT-5.4 Mini",
+  "gpt-5.3-codex": "GPT-5.3 Codex",
+  "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
+  "gpt-5.2-codex": "GPT-5.2 Codex",
+  "gpt-5.2": "GPT-5.2",
+  "gpt-5.1-codex-max": "GPT-5.1 Codex Max",
+  "gpt-5.1-codex-mini": "GPT-5.1 Codex Mini",
 };
+
+/** Get display label for any model regardless of provider */
+export function getModelLabel(model: string): string {
+  if (model in MODEL_LABELS) return MODEL_LABELS[model as ClaudeModel];
+  if (model in CODEX_MODEL_LABELS) return CODEX_MODEL_LABELS[model as CodexModel];
+  return model;
+}
+
+/** Describes what each agent provider's UI supports */
+export interface AgentCapabilities {
+  models: string[];
+  modelLabels: Record<string, string>;
+  defaultModel: string;
+  hasEffort: boolean;
+  effortLevels: string[];
+  effortLabels: Record<string, string>;
+  hasSubAgents: boolean;
+  hasCostTracking: boolean;
+  hasContextTracking: boolean;
+  hasMcp: boolean;
+  hasHooks: boolean;
+  hasPermissionModes: boolean;
+  /** Available permission/approval mode values for this provider */
+  permissionModes?: string[];
+  /** Display labels for permission/approval modes */
+  permissionLabels?: Record<string, string>;
+  hasSteering: boolean;
+  hasSessionResume: boolean;
+}
 
 export const EFFORT_LABELS: Record<EffortLevel, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
   max: "Max",
+};
+
+export const CODEX_EFFORT_LABELS: Record<CodexEffortLevel, string> = {
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+};
+
+export const KIMI_EFFORT_LABELS: Record<KimiThinkingMode, string> = {
+  default: "Config",
+  thinking: "Thinking",
+  "no-thinking": "No Think",
+};
+
+export const AGENT_CAPABILITIES: Record<AgentKind, AgentCapabilities> = {
+  claude: {
+    models: ["opus", "sonnet", "haiku"],
+    modelLabels: MODEL_LABELS,
+    defaultModel: "opus",
+    hasEffort: true,
+    effortLevels: ["low", "medium", "high", "max"],
+    effortLabels: EFFORT_LABELS,
+    hasSubAgents: true,
+    hasCostTracking: true,
+    hasContextTracking: true,
+    hasMcp: true,
+    hasHooks: true,
+    hasPermissionModes: true,
+    permissionModes: ["bypass", "acceptEdits", "plan", "default"],
+    permissionLabels: PERMISSION_LABELS,
+    hasSteering: true,
+    hasSessionResume: true,
+  },
+  codex: {
+    // Visible models ordered by priority (matches Codex CLI picker)
+    models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+    modelLabels: CODEX_MODEL_LABELS,
+    defaultModel: "gpt-5.4",
+    hasEffort: true,
+    effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh"],
+    effortLabels: CODEX_EFFORT_LABELS,
+    // Codex has Collab Tools (SpawnAgent/SendInput/Wait/CloseAgent) but needs separate UI — disabled v1
+    hasSubAgents: false,
+    hasCostTracking: true,
+    hasContextTracking: true,
+    // Codex supports MCP but config is separate from Claude's ~/.claude/settings.json
+    hasMcp: false,
+    hasHooks: false,
+    hasPermissionModes: true,
+    permissionModes: ["never", "on-failure", "on-request", "untrusted"],
+    permissionLabels: CODEX_APPROVAL_LABELS,
+    // Codex supports turn/steer for follow-up messages mid-turn
+    hasSteering: true,
+    // Codex supports `codex resume` / `codex exec resume`
+    hasSessionResume: true,
+  },
+  kimi: {
+    models: ["kimi-code/kimi-for-coding"],
+    modelLabels: {
+      "kimi-code/kimi-for-coding": "Kimi for Coding",
+    },
+    defaultModel: "kimi-code/kimi-for-coding",
+    hasEffort: true,
+    effortLevels: ["default", "thinking", "no-thinking"],
+    effortLabels: KIMI_EFFORT_LABELS,
+    hasSubAgents: false,
+    hasCostTracking: false,
+    hasContextTracking: true,
+    hasMcp: false,
+    hasHooks: false,
+    hasPermissionModes: true,
+    permissionModes: ["default", "plan", "never"],
+    permissionLabels: KIMI_PERMISSION_LABELS,
+    hasSteering: true,
+    hasSessionResume: true,
+  },
+};
+
+/** Context window limits per model (in tokens) */
+export const MODEL_CONTEXT_LIMITS: Record<ClaudeModel, number> = {
+  opus: 1_000_000,
+  sonnet: 200_000,
+  haiku: 200_000,
 };
 
 /** Token usage stats for a single response or accumulated session */
@@ -101,6 +318,7 @@ export interface TokenUsage {
   cacheCreationTokens: number;
 }
 
+/** Create a zeroed-out TokenUsage object */
 export function emptyUsage(): TokenUsage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
 }
@@ -121,7 +339,7 @@ export function formatTokens(n: number): string {
   return Math.round(n / 1000) + "k";
 }
 
-/** API pricing per million tokens (as of 2025) */
+/** API pricing per million tokens (as of 2026) */
 export const COST_PER_MILLION: Record<ClaudeModel, {
   input: number; output: number; cacheRead: number; cacheWrite: number;
 }> = {
@@ -131,8 +349,8 @@ export const COST_PER_MILLION: Record<ClaudeModel, {
 };
 
 /** Estimate dollar cost from token usage */
-export function calculateCost(usage: TokenUsage, model: ClaudeModel): number {
-  const r = COST_PER_MILLION[model];
+export function calculateCost(usage: TokenUsage, model: string): number {
+  const r = COST_PER_MILLION[model as ClaudeModel];
   if (!r) return 0;
   return (
     usage.inputTokens * r.input +
@@ -154,16 +372,17 @@ export interface Tab {
   name: string;
   messages: ChatMessage[];
   isRunning: boolean;
+  agentKind: AgentKind;
   cwd: string;
-  model: ClaudeModel;
-  effort: EffortLevel;
+  model: AgentModel;
+  effort: AgentEffort;
   sessionId?: string;
   usage?: TokenUsage;
   /** Last input token count — approximates current context window fill level */
   contextTokens?: number;
   /** Authoritative session cost from CLI (accumulated total_cost_usd) */
   totalCostUsd?: number;
-  permissionMode: PermissionMode;
+  permissionMode: string;
   /** Per-tab system prompt (overrides global default when set) */
   systemPrompt?: string;
   /** Additional directories Claude can access beyond CWD */
@@ -174,6 +393,20 @@ export interface Tab {
   runStartTime?: number;
   /** Internal: intermediate usage accumulated during current turn (reset on turnComplete) */
   _turnUsage?: TokenUsage;
+
+  // Phase 1: New state from Claude Code stream-json events
+  /** Background tasks spawned by Agent/Task tools */
+  backgroundTasks?: Map<string, BackgroundTask>;
+  /** Currently executing hooks */
+  activeHooks?: Map<string, HookExecution>;
+  /** Rate limit status from last rate_limit_event */
+  rateLimit?: RateLimitInfo;
+  /** API retry in progress */
+  apiRetry?: ApiRetryInfo;
+  /** Authoritative session lifecycle state */
+  sessionState?: SessionState;
+  /** Prompt suggestions from CLI */
+  suggestions?: string[];
 }
 
 /** Agent entry from `claude agents` output */
@@ -264,10 +497,15 @@ export interface SessionRecord {
   sessionId: string;
   /** Tab name / conversation title */
   name: string;
+  agentKind: AgentKind;
   /** Working directory */
   cwd: string;
-  model: ClaudeModel;
-  effort: EffortLevel;
+  model: AgentModel;
+  effort: AgentEffort;
+  permissionMode?: string;
+  systemPrompt?: string;
+  addDirs?: string[];
+  agent?: string;
   /** When the session was first created */
   createdAt: number;
   /** When the session was last active */
@@ -302,11 +540,11 @@ export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "/chrome", description: "Configure Chrome integration", kind: "cli" },
   { name: "/clear", description: "Clear conversation history", kind: "local" },
   { name: "/color", description: "Set prompt bar color", kind: "cli" },
-  { name: "/compact", description: "Compact conversation history", kind: "cli" },
-  { name: "/config", description: "Open settings", kind: "cli" },
-  { name: "/context", description: "Visualize context usage", kind: "cli" },
-  { name: "/copy", description: "Copy last response to clipboard", kind: "cli" },
-  { name: "/cost", description: "Show token usage & cost", kind: "cli" },
+  { name: "/compact", description: "Compact conversation history", kind: "local" },
+  { name: "/config", description: "Open settings", kind: "local" },
+  { name: "/context", description: "Visualize context usage", kind: "local" },
+  { name: "/copy", description: "Copy last response to clipboard", kind: "local" },
+  { name: "/cost", description: "Show token usage & cost", kind: "local" },
   { name: "/desktop", description: "Continue session in Desktop app", kind: "cli" },
   { name: "/diff", description: "Open diff viewer for uncommitted changes", kind: "cli" },
   { name: "/doctor", description: "Run diagnostics", kind: "cli" },
@@ -859,14 +1097,70 @@ export const THEME_PRESETS: ThemePreset[] = [
   },
 ];
 
+/** Alpha levels used per color key — must match what app.css and components use */
+const COLOR_ALPHAS: Record<string, number[]> = {
+  "--accent-purple": [0, 0.03, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.18, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1],
+  "--accent-blue": [0.04, 0.06, 0.08, 0.12, 0.3, 0.4, 0.9],
+  "--color-success": [0.08, 0.1, 0.12, 0.15, 0.2, 0.3, 0.7, 0.85, 0.9],
+  "--color-error": [0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.18, 0.2, 0.35, 0.4, 0.7, 0.8, 0.85, 0.9],
+  "--color-warning": [0.1, 0.12, 0.85],
+};
+
+function alphaVarName(key: string, alpha: number): string {
+  const suffix = alpha === 0 ? "00" : alpha === 1 ? "100" : String(Math.round(alpha * 100)).padStart(2, "0");
+  return `${key}-${suffix}`;
+}
+
+/** Vars auto-derived from --bg-base so structural elements follow the theme */
+const BG_DERIVED_VARS = ["--bg-glass", "--bg-glass-hover", "--glass-panel-bg", "--panel-tooltip-bg"];
+
+function hexToRgb(hex: string): [number, number, number] | null {
+  const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return null;
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+}
+
+function clamp(n: number): number { return Math.max(0, Math.min(255, Math.round(n))); }
+
+function deriveBgVars(root: HTMLElement, bgBase: string) {
+  const rgb = hexToRgb(bgBase);
+  if (!rgb) return;
+  const [r, g, b] = rgb;
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  if (brightness > 128) {
+    // Light theme: glass is slightly darker than base
+    root.style.setProperty("--bg-glass", `rgba(${clamp(r - 5)}, ${clamp(g - 5)}, ${clamp(b - 5)}, 0.85)`);
+    root.style.setProperty("--bg-glass-hover", `rgba(${clamp(r - 10)}, ${clamp(g - 10)}, ${clamp(b - 10)}, 0.9)`);
+    root.style.setProperty("--glass-panel-bg", `rgba(${r}, ${g}, ${b}, 0.95)`);
+    root.style.setProperty("--panel-tooltip-bg", `rgba(${r}, ${g}, ${b}, 0.96)`);
+  } else {
+    // Dark theme: glass is slightly lighter than base
+    root.style.setProperty("--bg-glass", `rgba(${clamp(r + 8)}, ${clamp(g + 8)}, ${clamp(b + 8)}, 0.85)`);
+    root.style.setProperty("--bg-glass-hover", `rgba(${clamp(r + 14)}, ${clamp(g + 14)}, ${clamp(b + 14)}, 0.9)`);
+    root.style.setProperty("--glass-panel-bg", `rgba(${r}, ${g}, ${b}, 0.92)`);
+    root.style.setProperty("--panel-tooltip-bg", `rgba(${clamp(r + 10)}, ${clamp(g + 10)}, ${clamp(b + 10)}, 0.96)`);
+  }
+}
+
 /** Apply a theme preset to the document */
 export function applyThemePreset(preset: ThemePreset) {
   const root = document.documentElement;
-  // Set base theme (dark/light) which controls the generic variables
   root.setAttribute("data-theme", preset.base);
-  // Apply preset-specific overrides
   for (const [key, value] of Object.entries(preset.vars)) {
     root.style.setProperty(key, value);
+    // Auto-derive structural bg vars from --bg-base
+    if (key === "--bg-base") deriveBgVars(root, value);
+    // Generate pre-computed alpha variants as direct rgba() values
+    if (key in COLOR_ALPHAS) {
+      const m = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+      if (m) {
+        const [r, g, b] = [m[1], m[2], m[3]];
+        root.style.setProperty(`${key}-rgb`, `${r}, ${g}, ${b}`);
+        for (const alpha of COLOR_ALPHAS[key]) {
+          root.style.setProperty(alphaVarName(key, alpha), `rgba(${r}, ${g}, ${b}, ${alpha})`);
+        }
+      }
+    }
   }
 }
 
@@ -875,5 +1169,14 @@ export function clearThemeOverrides(vars: Record<string, string>) {
   const root = document.documentElement;
   for (const key of Object.keys(vars)) {
     root.style.removeProperty(key);
+    if (key === "--bg-base") {
+      for (const v of BG_DERIVED_VARS) root.style.removeProperty(v);
+    }
+    if (key in COLOR_ALPHAS) {
+      root.style.removeProperty(`${key}-rgb`);
+      for (const alpha of COLOR_ALPHAS[key]) {
+        root.style.removeProperty(alphaVarName(key, alpha));
+      }
+    }
   }
 }
